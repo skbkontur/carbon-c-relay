@@ -683,8 +683,7 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
 		close(client);
 	} else {
 		(void) fcntl(client, F_SETFL, O_NONBLOCK);
-		if (dispatch_addconnection(client, lsock->lsnr, dispatch_worker_with_low_connections(), 0, 0) == NULL)
-			close(client);
+		dispatch_addconnection(client, lsock->lsnr, dispatch_worker_with_low_connections(), 0, 0);
 	}
 }
 
@@ -999,12 +998,13 @@ dispatch_transplantlistener(listener *olsnr, listener *nlsnr, router *r)
 
 static inline void dispatch_releaseconnection(int sock)
 {
-	connection *conn = connections[sock];
+	connection *conn;
 	pthread_rwlock_rdlock(&connectionslock);
 	conn = connections[sock];
 	connections[sock] = NULL;
 	pthread_rwlock_unlock(&connectionslock);
 	free(conn);
+	close(sock);
 }
 
 /**
@@ -1063,6 +1063,8 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 			connections[sock]->takenby = C_SETUP;
 		} else {
 			logerr("dispatcher %d: addconnection for existing socket %d\n", d->id, sock);
+			/* abort(); */
+			pthread_rwlock_unlock(&connectionslock);
 			return NULL;
 		}
 	} else {
@@ -1077,11 +1079,12 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 		newlst = realloc(connections,
 				sizeof(connection *) * (sock + CONNGROWSZ));
 		if (newlst == NULL) {
+			pthread_rwlock_unlock(&connectionslock);
+			__sync_add_and_fetch(&d->connections, -1);
+			close(sock);
 			logerr("cannot add new connection: "
 					"out of memory allocating more slots (max = %zu)\n",
 					connectionslen);
-			__sync_add_and_fetch(&d->connections, -1);
-			pthread_rwlock_unlock(&connectionslock);
 			return NULL;
 		}
 
@@ -1092,11 +1095,11 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 		connectionslen = sock + CONNGROWSZ;
 		connections[sock] = malloc(sizeof(connection));
 		if (connections[sock] == NULL) {
+			pthread_rwlock_unlock(&connectionslock);
+			__sync_add_and_fetch(&d->connections, -1);
 			logerr("cannot allocate new connection: "
 					"out of memory allocating more slots (max = %zu)\n",
 					connectionslen);
-			__sync_add_and_fetch(&d->connections, -1);
-			pthread_rwlock_unlock(&connectionslock);
 			return NULL;
 		}
 		connections[sock]->takenby = C_SETUP;
@@ -1237,8 +1240,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 					"out of memory allocating lz4 stream\n");
 			free(ibuf);
 			free(conn->strm);
-			free(conn);
-			connections[sock] = NULL;
+			dispatch_releaseconnection(sock);
 			__sync_add_and_fetch(&d->connections, -1);
 			return NULL;
 		}
@@ -1246,8 +1248,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 			logerr("Failed to create LZ4 decompression context\n");
 			free(ibuf);
 			free(conn->strm);
-			free(conn);
-			connections[sock] = NULL;
+			dispatch_releaseconnection(sock);
 			__sync_add_and_fetch(&d->connections, -1);
 			return NULL;
 		}
@@ -1271,8 +1272,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 					"out of memory allocating snappy stream\n");
 			free(ibuf);
 			free(conn->strm);
-			free(conn);
-			connections[sock] = NULL;
+			dispatch_releaseconnection(sock);
 			__sync_add_and_fetch(&d->connections, -1);
 			return NULL;
 		}
@@ -1309,9 +1309,9 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	/* after this dispatchers will pick this connection up */
 	__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_IN);
 	if (dispatch_connection_to_worker(d, conn) == -1) {
+		connections[sock] = NULL;
 		conn->strm->strmclose(conn->strm);
 		free(conn);
-		connections[sock] = NULL;
 		__sync_add_and_fetch(&errorsconnections, 1);
 		__sync_add_and_fetch(&d->connections, -1);
 		logerr("dispatch %d: failed to "
@@ -1871,6 +1871,8 @@ dispatch_wait_shutdown_byid(unsigned char id)
 void
 dispatch_free(dispatcher *d)
 {
+	queue_free(d->notify_queue);
+	event_base_free(d->evbase);
 	free(d);
 }
 
