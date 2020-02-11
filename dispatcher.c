@@ -907,6 +907,7 @@ __dispatch_addlistener(dispatcher *d, listener *lsnr)
 					pthread_rwlock_unlock(&listenerslock);
 					return 1;
 				}
+				event_priority_set(socks->ev, 2);
 				event_add(socks->ev, NULL);
 				tracef("dispatcher %d: event accept add for socket %d\n", d->id, socks->sock);
   			}
