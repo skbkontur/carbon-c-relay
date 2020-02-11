@@ -23,28 +23,33 @@
 #include "router.h"
 
 typedef struct _dispatcher dispatcher;
+typedef struct _connection connection;
 
 char dispatch_global_alloc(void);
 void dispatch_check_rlimit_and_warn(void);
 char dispatch_workers_alloc(char count);
 dispatcher **dispatch_workers(void);
+dispatcher *dispatch_listener_worker(void);
+dispatcher *dispatch_worker_with_low_connections(void);
 char dispatch_workercnt(void);
+connection *dispatch_get_connection(int c);
 int dispatch_addlistener(listener *lsnr);
-void dispatch_removelistener(listener *lsnr);
-void dispatch_transplantlistener(listener *olsnr, listener *nlsnr, router *r);
-int dispatch_addconnection(int sock, listener *lsnr);
-int dispatch_addconnection_aggr(int sock);
+int dispatch_removelistener(listener *lsnr);
+int dispatch_transplantlistener(listener *olsnr, listener *nlsnr, router *r);
+connection *dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, char no_expire);
+connection *dispatch_addconnection_aggr(int sock);
 void dispatch_set_bufsize(unsigned int sockbufsize);
 char dispatch_init_listeners(void);
-dispatcher *dispatch_new_listener(unsigned char id);
-dispatcher *dispatch_new_connection( unsigned char id, router *r,
+int dispatch_start_listener(unsigned char id, router *r,
 		char *allowed_chars, int maxinplen, int maxmetriclen);
-unsigned char dispatch_new_connections(router *r, char *allowed_chars,
+int dispatch_start_connection(unsigned char id, router *r,
+		char *allowed_chars, int maxinplen, int maxmetriclen);
+unsigned char dispatch_start_connections(router *r, char *allowed_chars,
 		int maxinplen, int maxmetriclen);
 void dispatch_stop(dispatcher *d);
 void dispatchs_stop(void);
-void dispatch_shutdown(dispatcher *d);
-void dispatch_shutdown_id(unsigned char id);
+void dispatch_wait_shutdown(dispatcher *d);
+void dispatch_wait_shutdown_byid(unsigned char id);
 void dispatch_free(dispatcher *d);
 void dispatchs_free();
 size_t dispatch_get_ticks(dispatcher *self);
