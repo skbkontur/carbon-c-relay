@@ -638,6 +638,7 @@ dispatch_notify_transplantlistener(dispatcher *d, transplantlistener *tr)
 void dispatch_read_cb(int fd, short flags, void *arg)
 {
 	connection *conn = (connection *) arg;
+	dispatcher *d  = conn->d;
 	struct timeval start, stop;
 
 	gettimeofday(&start, NULL);
@@ -648,17 +649,17 @@ void dispatch_read_cb(int fd, short flags, void *arg)
 	} else {
 		if (!__sync_bool_compare_and_swap(&(conn->takenby), C_IN, conn->d->id))
 				return;
-		if (__sync_bool_compare_and_swap(&(conn->d->hold), 1, 1) && !conn->isaggr)
+		if (__sync_bool_compare_and_swap(&(d->hold), 1, 1) && !conn->isaggr)
 		{
 			__sync_bool_compare_and_swap(
-					&(conn->takenby), conn->d->id, C_IN);
+					&(conn->takenby), d->id, C_IN);
 			return;
 		}
 		dispatch_connection(conn, conn->d, start);
 	}
 
 	gettimeofday(&stop, NULL);
-	__sync_add_and_fetch(&(conn->d->ticks), timediff(start, stop));
+	__sync_add_and_fetch(&(d->ticks), timediff(start, stop));
 }
 
 void dispatch_accept_cb(int fd, short flags, void *arg)
@@ -996,6 +997,16 @@ dispatch_transplantlistener(listener *olsnr, listener *nlsnr, router *r)
 
 }
 
+static inline void dispatch_releaseconnection(int sock)
+{
+	connection *conn = connections[sock];
+	pthread_rwlock_rdlock(&connectionslock);
+	conn = connections[sock];
+	connections[sock] = NULL;
+	pthread_rwlock_unlock(&connectionslock);
+	free(conn);
+}
+
 /**
  * Copy over all state related things from olsnr to nlsnr and ensure
  * olsnr can be discarded (that is, thrown away without calling
@@ -1119,8 +1130,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	conn->sock = sock;
 	conn->strm = malloc(sizeof(z_strm));
 	if (conn->strm == NULL) {
-		free(conn);
-		connections[sock] = NULL;
+		dispatch_releaseconnection(sock);
 		__sync_add_and_fetch(&d->connections, -1);
 		logerr("cannot add new connection: "
 				"out of memory allocating stream\n");
@@ -1148,8 +1158,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	} else {
 		if ((conn->strm->hdl.ssl = SSL_new(lsnr->ctx)) == NULL) {
 			free(conn->strm);
-			free(conn);
-			connections[sock] = NULL;
+			dispatch_releaseconnection(sock);
 			__sync_add_and_fetch(&d->connections, -1);
 			logerr("cannot add new connection: %s\n",
 					ERR_reason_error_string(ERR_get_error()));
@@ -1174,8 +1183,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 		ibuf = malloc(METRIC_BUFSIZ);
 		if (ibuf == NULL) {
 			free(conn->strm);
-			free(conn);
-			connections[sock] = NULL;
+			dispatch_releaseconnection(sock);
 			__sync_add_and_fetch(&d->connections, -1);
 			logerr("cannot add new connection: "
 					"out of memory allocating stream ibuf\n");
@@ -1198,8 +1206,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 					"out of memory allocating gzip stream\n");
 			free(ibuf);
 			free(conn->strm);
-			free(conn);
-			connections[sock] = NULL;
+			dispatch_releaseconnection(sock);
 			__sync_add_and_fetch(&d->connections, -1);
 			return NULL;
 		}
@@ -1262,7 +1269,6 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 		if (lzstrm == NULL) {
 			logerr("cannot add new connection: "
 					"out of memory allocating snappy stream\n");
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			free(ibuf);
 			free(conn->strm);
 			free(conn);
@@ -1511,11 +1517,9 @@ dispatch_closeconnection(connection *conn, dispatcher *self, ssize_t len)
 	__sync_add_and_fetch(&self->connections, -1);
 	__sync_add_and_fetch(&closedconnections, 1);
 	event_free(conn->ev);
+	connections[conn->sock] = NULL;
 	conn->strm->strmclose(conn->strm);
-
-		/* flag this connection as no longer in use, unless there is
-		 * pending metrics to send */
-	__sync_bool_compare_and_swap(&(conn->takenby), self->id, C_FREE);
+	free(conn);
 }
 
 /**
