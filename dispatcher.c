@@ -682,7 +682,8 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
 		close(client);
 	} else {
 		(void) fcntl(client, F_SETFL, O_NONBLOCK);
-		dispatch_addconnection(client, lsock->lsnr, dispatch_worker_with_low_connections(), 0, 0);
+		if (dispatch_addconnection(client, lsock->lsnr, dispatch_worker_with_low_connections(), 0, 0) == NULL)
+			close(client);
 	}
 }
 
@@ -1035,7 +1036,7 @@ __dispatch_transplantlistener(dispatcher *d, listener *olsnr, listener *nlsnr, r
 connection *
 dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, char no_expire)
 {
-	size_t c;
+	int c;
 	connection *conn;
 	struct sockaddr_in6 saddr;
 	socklen_t saddr_len = sizeof(saddr);
@@ -1045,26 +1046,25 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 #endif
 
 	pthread_rwlock_rdlock(&connectionslock);
-	for (c = 0; c < connectionslen; c++) {
-		if (connections[c] == NULL) {
-			connections[c] = malloc(sizeof(connection));
-			connections[c]->takenby = C_SETUP;
-				break;
-		} else if (__sync_bool_compare_and_swap(&(connections[c]->takenby), C_FREE, C_SETUP)) {
-				break;
+	if (sock < connectionslen) {
+		if (connections[sock] == NULL) {
+			connections[sock] = malloc(sizeof(connection));
+			connections[sock]->takenby = C_SETUP;
+		} else {
+			logerr("dispatcher %d: addconnection for existing socket %d\n", d->id, sock);
+			return NULL;
 		}
-	}
-	if (c == connectionslen) {
+	} else {
 		connection **newlst;
 		pthread_rwlock_unlock(&connectionslock);
 		pthread_rwlock_wrlock(&connectionslock);
-		if (connectionslen > c) {
+		if (connectionslen > sock) {
 			/* another dispatcher just extended the list */
 			pthread_rwlock_unlock(&connectionslock);
 			return dispatch_addconnection(sock, lsnr, d, is_aggr, no_expire);
 		}
 		newlst = realloc(connections,
-				sizeof(connection *) * (connectionslen + CONNGROWSZ));
+				sizeof(connection *) * (sock + CONNGROWSZ));
 		if (newlst == NULL) {
 			logerr("cannot add new connection: "
 					"out of memory allocating more slots (max = %zu)\n",
@@ -1074,13 +1074,13 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 			return NULL;
 		}
 
-		for (c = connectionslen; c < connectionslen + CONNGROWSZ; c++) {
+		for (c = connectionslen; c < sock + CONNGROWSZ; c++) {
 			newlst[c] = NULL;
 		}
 		connections = newlst;
-		c = connectionslen;  /* for the setup code below */
-		connections[c] = malloc(sizeof(connection));
-		if (connections[c] == NULL) {
+		connectionslen = sock + CONNGROWSZ;
+		connections[sock] = malloc(sizeof(connection));
+		if (connections[sock] == NULL) {
 			logerr("cannot allocate new connection: "
 					"out of memory allocating more slots (max = %zu)\n",
 					connectionslen);
@@ -1088,10 +1088,9 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 			pthread_rwlock_unlock(&connectionslock);
 			return NULL;
 		}
-		connections[c]->takenby = C_SETUP;
-		connectionslen += CONNGROWSZ;
+		connections[sock]->takenby = C_SETUP;
 	}
-	conn = connections[c];
+	conn = connections[sock];
 	pthread_rwlock_unlock(&connectionslock);
 
 	/* figure out who's calling */
@@ -1120,10 +1119,11 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	conn->sock = sock;
 	conn->strm = malloc(sizeof(z_strm));
 	if (conn->strm == NULL) {
+		free(conn);
+		connections[sock] = NULL;
+		__sync_add_and_fetch(&d->connections, -1);
 		logerr("cannot add new connection: "
 				"out of memory allocating stream\n");
-		__sync_add_and_fetch(&d->connections, -1);
-		__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 		return NULL;
 	}
 
@@ -1147,11 +1147,12 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 #ifdef HAVE_SSL
 	} else {
 		if ((conn->strm->hdl.ssl = SSL_new(lsnr->ctx)) == NULL) {
+			free(conn->strm);
+			free(conn);
+			connections[sock] = NULL;
+			__sync_add_and_fetch(&d->connections, -1);
 			logerr("cannot add new connection: %s\n",
 					ERR_reason_error_string(ERR_get_error()));
-			free(conn->strm);
-			__sync_add_and_fetch(&d->connections, -1);
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			return NULL;
 		};
 		SSL_set_fd(conn->strm->hdl.ssl, sock);
@@ -1172,11 +1173,12 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	if (compress_type == W_GZIP || compress_type == W_LZ4 || compress_type == W_SNAPPY) {
 		ibuf = malloc(METRIC_BUFSIZ);
 		if (ibuf == NULL) {
+			free(conn->strm);
+			free(conn);
+			connections[sock] = NULL;
+			__sync_add_and_fetch(&d->connections, -1);
 			logerr("cannot add new connection: "
 					"out of memory allocating stream ibuf\n");
-			free(conn->strm);
-			__sync_add_and_fetch(&d->connections, -1);
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			return NULL;
 		}
 	} else
@@ -1196,8 +1198,9 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 					"out of memory allocating gzip stream\n");
 			free(ibuf);
 			free(conn->strm);
+			free(conn);
+			connections[sock] = NULL;
 			__sync_add_and_fetch(&d->connections, -1);
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			return NULL;
 		}
 		zstrm->hdl.gz.z.zalloc = Z_NULL;
@@ -1227,16 +1230,18 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 					"out of memory allocating lz4 stream\n");
 			free(ibuf);
 			free(conn->strm);
+			free(conn);
+			connections[sock] = NULL;
 			__sync_add_and_fetch(&d->connections, -1);
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			return NULL;
 		}
 		if (LZ4F_isError(LZ4F_createDecompressionContext(&lzstrm->hdl.lz4.lz, LZ4F_VERSION))) {
 			logerr("Failed to create LZ4 decompression context\n");
 			free(ibuf);
 			free(conn->strm);
+			free(conn);
+			connections[sock] = NULL;
 			__sync_add_and_fetch(&d->connections, -1);
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			return NULL;
 		}
 		lzstrm->ibuf = ibuf;
@@ -1260,8 +1265,9 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			free(ibuf);
 			free(conn->strm);
+			free(conn);
+			connections[sock] = NULL;
 			__sync_add_and_fetch(&d->connections, -1);
-			__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_FREE);
 			return NULL;
 		}
 
@@ -1298,7 +1304,8 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_IN);
 	if (dispatch_connection_to_worker(d, conn) == -1) {
 		conn->strm->strmclose(conn->strm);
-		__sync_bool_compare_and_swap(&(conn->takenby), C_IN, C_SETUP);
+		free(conn);
+		connections[sock] = NULL;
 		__sync_add_and_fetch(&errorsconnections, 1);
 		__sync_add_and_fetch(&d->connections, -1);
 		logerr("dispatch %d: failed to "
