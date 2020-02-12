@@ -541,47 +541,21 @@ sslclose(z_strm *strm)
 }
 #endif
 
-static void dispatch_closeconnection(connection *conn, dispatcher *self, ssize_t len);
+static void dispatch_closeconnection(dispatcher *d, connection *conn, ssize_t len);
+static void dispatch_releaseconnection(int sock);
 static int dispatch_connection(connection *conn, dispatcher *self, struct timeval start);
 
-static int dispatch_notify(dispatcher *d, ev_cmd *cmd)
-{
-	if (d->running) {
-		cmd->header[0] = 110;
-		cmd->header[1] = 111;
-		cmd->header[2] = 112;
-		cmd->header[3] = 113;
-		cmd->d = d;
-		if (write(d->notify_fd[0], cmd, sizeof(*cmd)) == sizeof(*cmd))
-			return 0;
-		else
-			return -1;
-	} else {
-		/* dispatcher not started yet */
-		ev_cmd *c = malloc(sizeof(ev_cmd));
-		if (c == NULL)
-			return -1;
-		c->what = cmd->what;
-		c->arg = cmd->arg;
-		c->d = d;
-		if (queue_putback(d->notify_queue, (char *) c) == 1)
-			return 0;
-		else {
-			free(c);
-			return -1;
-		}
-	}
-}
-
 /*
- * Write shutdown command to command socket
+ * Shutdown command
  **/
 static int
-dispatch_notify_shutdown(dispatcher *d)
+dispatch_shutdown(dispatcher *d)
 {
-	ev_cmd cmd;
-	cmd.what = EV_CMD_SHUTDOWN;
-	return dispatch_notify(d, &cmd);
+	if (event_base_loopexit(d->evbase, NULL) == -1) {
+		logerr("event_base_loopexit failed!\n");
+		abort();
+	}
+	return 0;
 }
 
 static int __dispatch_addlistener(dispatcher *d, listener *lsnr);
@@ -589,50 +563,15 @@ static int __dispatch_removelistener(dispatcher *d, listener *lsnr);
 static int __dispatch_transplantlistener(dispatcher *d, listener *olsnr, listener *nlsnr, router *r);
 
 static int
-dispatch_notify_reload(dispatcher *d)
+dispatch_reload(dispatcher *d)
 {
-	ev_cmd cmd;
-	cmd.what = EV_CMD_RELOAD;
-	return dispatch_notify(d, &cmd);
-}
-
-/*
- * Write accept command to command socket
- **/
-static int
-dispatch_notify_read(dispatcher *d, connection *conn)
-{
-	ev_cmd cmd;
-	cmd.what = EV_CMD_READ;
-	cmd.arg = conn;
-	return dispatch_notify(d, &cmd);
-}
-
-static int
-dispatch_notify_addlistener(dispatcher *d, listener *lsnr)
-{
-	ev_cmd cmd;
-	cmd.what = EV_CMD_LADD;
-	cmd.arg = lsnr;
-	return dispatch_notify(d, &cmd);
-}
-
-static int
-dispatch_notify_removelistener(dispatcher *d, listener *lsnr)
-{
-	ev_cmd cmd;
-	cmd.what = EV_CMD_LREMOVE;
-	cmd.arg = lsnr;
-	return dispatch_notify(d, &cmd);
-}
-
-static int
-dispatch_notify_transplantlistener(dispatcher *d, transplantlistener *tr)
-{
-	ev_cmd cmd;
-	cmd.what = EV_CMD_LTRANSPLANT;
-	cmd.arg = tr;
-	return dispatch_notify(d, &cmd);
+	if (__sync_bool_compare_and_swap(&(d->route_refresh_pending), 1, 1)) {
+		d->rtr = d->pending_rtr;
+		d->pending_rtr = NULL;
+		__sync_bool_compare_and_swap(&(d->route_refresh_pending), 1, 0);
+		__sync_and_and_fetch(&(d->hold), 0);
+	}
+	return 0;
 }
 
 void dispatch_read_cb(int fd, short flags, void *arg)
@@ -645,7 +584,7 @@ void dispatch_read_cb(int fd, short flags, void *arg)
 	if (flags & EV_TIMEOUT) {
 		__sync_lock_test_and_set(&(conn->takenby), conn->d->id);
 		tracef("dispatcher: timeout socket %d\n", conn->sock);
-		dispatch_closeconnection(conn, conn->d, 0);
+		dispatch_closeconnection(conn->d, conn, 0);
 	} else {
 		if (!__sync_bool_compare_and_swap(&(conn->takenby), C_IN, conn->d->id))
 				return;
@@ -687,82 +626,14 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
 	}
 }
 
-static void
-dispatch_cmd(dispatcher *d, ev_cmd *cmd)
-{
-	/* logout("dispatch %d: set %d\n", d->id, cmd->what); */
-	switch (cmd->what) {
-		case EV_CMD_SHUTDOWN:
-			/* logout("shutdown\n"); */
-			{
-				if (event_base_loopexit(d->evbase, NULL) == -1) {
-					logerr("event_base_loopexit failed!\n");
-					abort();
-				}
-			}
-			break;
-		case EV_CMD_RELOAD:
-			{
-				if (__sync_bool_compare_and_swap(&(cmd->d->route_refresh_pending), 1, 1)) {
-					d->rtr = d->pending_rtr;
-					d->pending_rtr = NULL;
-					__sync_bool_compare_and_swap(&(cmd->d->route_refresh_pending), 1, 0);
-					__sync_and_and_fetch(&(cmd->d->hold), 0);
-				}
-			}
-			break;
-		case EV_CMD_LADD:
-			{
-				listener *lsnr = (listener *) cmd->arg;
-				__dispatch_addlistener(cmd->d, lsnr);
-			}
-			break;
-		case EV_CMD_LREMOVE:
-			{
-				listener *lsnr = (listener *) cmd->arg;
-				__dispatch_removelistener(cmd->d, lsnr);
-			}
-			break;
-		case EV_CMD_LTRANSPLANT:
-			{
-				transplantlistener *tr = (transplantlistener *) cmd->arg;
-				__dispatch_transplantlistener(cmd->d, tr->olsnr, tr->nlsnr, tr->r);
-			}
-			break;
-		case EV_CMD_READ:
-			{
-				connection *conn = (connection *) cmd->arg;
-				conn->d = cmd->d;
-				if (!conn->noexpire) {
-					struct timeval tv;
-					tv.tv_sec = IDLE_DISCONNECT_TIME;
-					tv.tv_usec = 0;
-					event_add(conn->ev, &tv);
-				} else {
-					event_add(conn->ev, NULL);
-				}
-				tracef("dispatcher %d: event read add for socket %d\n", conn->d->id, conn->sock);
-			}
-			break;
-		default:
-			logerr("dispatcher: unknown cmd %d\n", cmd->what);
-	}
-}
-
 /**
- * Read command from socket callback
+ * Fake read command from socket callback
  */
 static void
 dispatch_cmd_cb(int fd, short flags, void *arg)
 {
-	ev_cmd cmd;
-	if (read(fd, &cmd, sizeof(cmd)) == sizeof(cmd)) {
-		if (cmd.header[0] != 110 || cmd.header[1] != 111 ||
-			cmd.header[2] != 112 || cmd.header[3] != 113) {
-			logerr("dispatcher: corrupted cmd\n");
-		}
-		dispatch_cmd(cmd.d, &cmd);
-	} else {
+    ev_cmd cmd;
+	if (read(fd, &cmd, sizeof(cmd)) != sizeof(cmd)) {
 		logerr("dispatcher: incomplete cmd\n");
 	}
 }
@@ -840,7 +711,17 @@ dispatch_connection_to_worker(dispatcher *d, connection *conn)
 	}
 	if (conn->ev == NULL)
 		return -1;
-	return dispatch_notify_read(d, conn);
+	conn->d = d;
+	if (!conn->noexpire) {
+		struct timeval tv;
+		tv.tv_sec = IDLE_DISCONNECT_TIME;
+		tv.tv_usec = 0;
+		event_add(conn->ev, &tv);
+	} else {
+		event_add(conn->ev, NULL);
+	}
+	tracef("dispatcher %d: event read add for socket %d\n", d->id, conn->sock);
+	return 0;
 }
 
 connection *
@@ -852,7 +733,7 @@ dispatch_get_connection(int c)
 int
 dispatch_addlistener(listener *lsnr)
 {
-	int res = dispatch_notify_addlistener(dispatch_listener_worker(), lsnr);
+	int res = __dispatch_addlistener(dispatch_listener_worker(), lsnr);
 	if (res != 0) {
 		logerr("dispatch: failed to notify addlistener\n");
 		return 1;
@@ -929,7 +810,7 @@ __dispatch_addlistener(dispatcher *d, listener *lsnr)
 int
 dispatch_removelistener(listener *lsnr)
 {
-	int res = dispatch_notify_removelistener(dispatch_listener_worker(), lsnr);
+	int res = __dispatch_removelistener(dispatch_listener_worker(), lsnr);
 	if (res != 0) {
 		logerr("dispatch: failed to notify removelistener\n");
 		return 1;
@@ -970,7 +851,7 @@ __dispatch_removelistener(dispatcher *d, listener *lsnr)
 	for (socks = lsnr->socks; socks->sock != -1; socks++) {
 		//ev_io_stop(loop, &socks->ev);
 		if (lsnr->ctype == CON_UDP) {
-			dispatch_closeconnection(connections[socks->sock], d, 0);
+			dispatch_closeconnection(d, connections[socks->sock], 0);
 		} else {
 			event_free(socks->ev);
 			close(socks->sock);
@@ -988,28 +869,13 @@ __dispatch_removelistener(dispatcher *d, listener *lsnr)
 int
 dispatch_transplantlistener(listener *olsnr, listener *nlsnr, router *r)
 {
-	transplantlistener tr;
-	tr.olsnr = olsnr;
-	tr.nlsnr = nlsnr;
-	tr.r = r;
-	int res = dispatch_notify_transplantlistener(dispatch_listener_worker(), &tr);
+	int res = __dispatch_transplantlistener(dispatch_listener_worker(), olsnr, nlsnr, r);
 	if (res != 0) {
 		logerr("dispatch: failed to notify transplantlistener (%d)\n", errno);
 		return 1;
 	}
 	return 0;
 
-}
-
-static inline void dispatch_releaseconnection(int sock)
-{
-	connection *conn;
-	pthread_rwlock_rdlock(&connectionslock);
-	conn = connections[sock];
-	connections[sock] = NULL;
-	pthread_rwlock_unlock(&connectionslock);
-	free(conn);
-	close(sock);
 }
 
 /**
@@ -1313,10 +1179,9 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	gettimeofday(&conn->lastwork, NULL);
 	/* after this dispatchers will pick this connection up */
 	__sync_bool_compare_and_swap(&(conn->takenby), C_SETUP, C_IN);
+	conn->ev = NULL;
 	if (dispatch_connection_to_worker(d, conn) == -1) {
-		connections[sock] = NULL;
-		conn->strm->strmclose(conn->strm);
-		free(conn);
+		dispatch_closeconnection(d, conn, 0);
 		__sync_add_and_fetch(&errorsconnections, 1);
 		__sync_add_and_fetch(&d->connections, -1);
 		logerr("dispatch %d: failed to "
@@ -1513,20 +1378,34 @@ dispatch_received_metrics(connection *conn, dispatcher *self)
 	}
 }
 
+static inline void dispatch_releaseconnection(int sock)
+{
+	connection *conn;
+	pthread_rwlock_rdlock(&connectionslock);
+	conn = connections[sock];
+	connections[sock] = NULL;
+	pthread_rwlock_unlock(&connectionslock);
+	free(conn);
+	close(sock);
+}
+
 static void
-dispatch_closeconnection(connection *conn, dispatcher *self, ssize_t len)
+dispatch_closeconnection(dispatcher *d, connection *conn, ssize_t len)
 {
 	tracef("dispatcher: %d, connfd: %d, len: %zd [%s], disconnecting\n",
-		self->id, conn->sock, len,
+		d->id, conn->sock, len,
 		len < 0 ? strerror(errno) : "");
-	__sync_add_and_fetch(&self->connections, -1);
+	__sync_add_and_fetch(&d->connections, -1);
 	__sync_add_and_fetch(&closedconnections, 1);
 	pthread_rwlock_rdlock(&connectionslock);
 	connections[conn->sock] = NULL;
 	pthread_rwlock_unlock(&connectionslock);
-	event_free(conn->ev);
+	if (conn->ev != NULL) {
+		event_free(conn->ev);
+	}
 	conn->strm->strmclose(conn->strm);
 	free(conn);
+	__sync_add_and_fetch(&closedconnections, 1);
 }
 
 /**
@@ -1628,7 +1507,7 @@ dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 
 			return -1;
 		} else if (conn->destlen == 0) {
-			dispatch_closeconnection(conn, self, len);
+			dispatch_closeconnection(self, conn, len);
 			return 0;
 		}
 	}
@@ -1647,23 +1526,11 @@ static void *
 dispatch_runner(void *arg)
 {
 	dispatcher *d = (dispatcher *)arg;
-	ev_cmd *cmd;
-	while ((cmd = (ev_cmd *) queue_dequeue(d->notify_queue)) != NULL) {
-		dispatch_cmd(d, cmd);
-		free(cmd);
-	}
 	d->running = 1;
 	if (event_base_dispatch(d->evbase) < 0) {
 		logerr("dispatcher %d: event_base_dispatch() failed\n", d->id);
 	}
-	//ev_run (d->evbase, 0);
 	d->running = 0;
-	/* execute pending for connections dispatcher */
-	/*
-	ev_invoke_pending (d->evbase);
-	ev_async_stop(d->evbase, &d->notify_ev);
-	ev_loop_destroy(d->evbase);
-	*/
 	return NULL;
 }
 
@@ -1845,7 +1712,7 @@ void
 dispatch_stop(dispatcher *d)
 {
 	__sync_bool_compare_and_swap(&(d->keep_running), 1, 0);
-	dispatch_notify_shutdown(d);
+	dispatch_shutdown(d);
 }
 
 void
@@ -1890,7 +1757,7 @@ dispatchs_free()
 	int i;
 	for (i = 0; i < connectionslen; i++) {
 		if (connections[i] != NULL)
-			dispatch_closeconnection(connections[i], dispatch_listener_worker(), 0);
+			dispatch_closeconnection(dispatch_listener_worker(), connections[i], 0);
 	}
 	for (i = 0; i < 1 + workercnt; i++)
 		dispatch_free(workers[i]);
@@ -1933,7 +1800,7 @@ dispatch_schedulereload(dispatcher *d, router *r)
 {
 	d->pending_rtr = r;
 	__sync_bool_compare_and_swap(&(d->route_refresh_pending), 0, 1);
-	dispatch_notify_reload(d);
+	dispatch_reload(d);
 }
 
 void
