@@ -969,8 +969,12 @@ __dispatch_removelistener(dispatcher *d, listener *lsnr)
 #endif
 	for (socks = lsnr->socks; socks->sock != -1; socks++) {
 		//ev_io_stop(loop, &socks->ev);
-		event_free(socks->ev);
-		close(socks->sock);
+		if (lsnr->ctype == CON_UDP) {
+			dispatch_closeconnection(connections[socks->sock], d, 0);
+		} else {
+			event_free(socks->ev);
+			close(socks->sock);
+		}
 		logout("listener: close socket %d\n", socks->sock);
 		socks->sock = -1;
 	}
@@ -1517,8 +1521,10 @@ dispatch_closeconnection(connection *conn, dispatcher *self, ssize_t len)
 		len < 0 ? strerror(errno) : "");
 	__sync_add_and_fetch(&self->connections, -1);
 	__sync_add_and_fetch(&closedconnections, 1);
-	event_free(conn->ev);
+	pthread_rwlock_rdlock(&connectionslock);
 	connections[conn->sock] = NULL;
+	pthread_rwlock_unlock(&connectionslock);
+	event_free(conn->ev);
 	conn->strm->strmclose(conn->strm);
 	free(conn);
 }
@@ -1872,7 +1878,8 @@ dispatch_wait_shutdown_byid(unsigned char id)
 void
 dispatch_free(dispatcher *d)
 {
-	queue_free(d->notify_queue);
+	queue_destroy(d->notify_queue);
+	event_free(d->notify_ev);
 	event_base_free(d->evbase);
 	free(d);
 }
@@ -1880,10 +1887,20 @@ dispatch_free(dispatcher *d)
 void
 dispatchs_free()
 {
-	int id;
-	for (id = 0; id < 1 + workercnt; id++)
-		dispatch_free(workers[id]);
+	int i;
+	for (i = 0; i < connectionslen; i++) {
+		if (connections[i] != NULL)
+			dispatch_closeconnection(connections[i], dispatch_listener_worker(), 0);
+	}
+	for (i = 0; i < 1 + workercnt; i++)
+		dispatch_free(workers[i]);
+	for (i = 0; i < MAX_LISTENERS; i++) {
+		if (listeners[i] != NULL)
+			free(listeners[i]);
+	}
+	free(listeners);
 	free(workers);
+	free(connections);
 }
 
 /**
