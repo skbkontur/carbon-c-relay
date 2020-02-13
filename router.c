@@ -1098,7 +1098,7 @@ router_add_listener(
 	lwalk->ctx = NULL;
 	lwalk->sslstrms = NULL;
 	lwalk->pemcert = pemcert;
-	if (stat(pemcert, &st) != -1) {
+	if (pemcert != NULL && stat(pemcert, &st) != -1) {
 		memcpy(&(lwalk->pemmtimespec), &(st.st_mtime),
 				sizeof(struct timespec));
 	} else {
@@ -1792,6 +1792,7 @@ router_set_collectorvals(router *rtr, int intv, char *prefix, col_mode smode)
 			size_t len = snprintf(cprefix, sizeof(cprefix),
 					"failed to compile hostname regexp: ");
 			regerror(reret, &re, cprefix + len, sizeof(cprefix) - len);
+			regfree(&re);
 			return ra_strdup(rtr->a, cprefix);
 		}
 		if ((reret = regexec(&re, relay_hostname, nmatch, pmatch, 0)) != 0) {
