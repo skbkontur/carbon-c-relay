@@ -1213,6 +1213,16 @@ dispatch_addconnection_aggr(int sock)
 	return conn;
 }
 
+/* optimized rand for perfomance */
+static int rand2()
+{
+    static __thread unsigned int seed = 4541;
+
+    seed = (8253729 * seed + 2396403);
+
+    return seed  % RAND_MAX;
+}
+
 inline static char
 dispatch_process_dests(connection *conn, dispatcher *self, struct timeval now)
 {
@@ -1221,7 +1231,7 @@ dispatch_process_dests(connection *conn, dispatcher *self, struct timeval now)
 
 	if (conn->destlen > 0) {
 		if (conn->maxsenddelay == 0)
-			conn->maxsenddelay = ((rand() % 750) + 250) * 1000;
+			conn->maxsenddelay = ((rand2() % 750) + 250) * 1000;
 		/* force when aggr (don't stall it) or after timeout */
 		force = conn->isaggr ? 1 :
 			timediff(conn->lastwork, now) > conn->maxsenddelay;
