@@ -56,8 +56,6 @@ char *sslCA = NULL;
 char sslCAisdir = 0;
 #endif
 
-int ev_mode;
-
 static char *config = NULL;
 static int batchsize = 2500;
 static int queuesize = 25000;
