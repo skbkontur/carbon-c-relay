@@ -571,6 +571,7 @@ server_queuereader(void *d)
 	size_t len;
 	ssize_t slen;
 	const char **metric = self->batch;
+	const char **p;
 	struct timeval start, stop;
 	struct timeval timeout;
 	queue *squeue;
@@ -1128,7 +1129,7 @@ server_queuereader(void *d)
 			metric -= server_metrics_in_buffer(self);
 			self->strm->obuflen = 0;
 			/* free sended metrics */
-			for (const char **p = self->batch; p != metric && *p != NULL; p++) {
+			for (p = self->batch; p != metric && *p != NULL; p++) {
 				free((char *)*p);
 			}
 			/* put back stuff we couldn't process */
