@@ -562,18 +562,6 @@ static int __dispatch_addlistener(dispatcher *d, listener *lsnr);
 static int __dispatch_removelistener(dispatcher *d, listener *lsnr);
 static int __dispatch_transplantlistener(dispatcher *d, listener *olsnr, listener *nlsnr, router *r);
 
-static int
-dispatch_reload(dispatcher *d)
-{
-	if (__sync_bool_compare_and_swap(&(d->route_refresh_pending), 1, 1)) {
-		d->rtr = d->pending_rtr;
-		d->pending_rtr = NULL;
-		__sync_bool_compare_and_swap(&(d->route_refresh_pending), 1, 0);
-		__sync_and_and_fetch(&(d->hold), 0);
-	}
-	return 0;
-}
-
 void dispatch_read_cb(int fd, short flags, void *arg)
 {
 	connection *conn = (connection *) arg;
@@ -636,6 +624,31 @@ dispatch_cmd_cb(int fd, short flags, void *arg)
 	if (read(fd, &cmd, sizeof(cmd)) != sizeof(cmd)) {
 		logerr("dispatcher: incomplete cmd\n");
 	}
+}
+
+static int
+dispatch_reload(dispatcher *d)
+{
+	if (__sync_bool_compare_and_swap(&(d->route_refresh_pending), 1, 1)) {
+		int c;
+		ev_io_sock *socks;
+		d->rtr = d->pending_rtr;
+		d->pending_rtr = NULL;
+		/* change listener on accept_cb arg */
+		for (c = 0; c < MAX_LISTENERS; c++) {
+			if (listeners[c] != NULL) {
+				for (socks = listeners[c]->socks; socks->sock != -1; socks++) {
+					event_free(socks->ev);
+					socks->ev = event_new(d->evbase, socks->sock, EV_READ | EV_PERSIST,
+										  dispatch_accept_cb, socks);
+					event_add(socks->ev, NULL);
+				}
+			}
+		}
+		__sync_bool_compare_and_swap(&(d->route_refresh_pending), 1, 0);
+		__sync_and_and_fetch(&(d->hold), 0);
+	}
+	return 0;
 }
 
 /**
