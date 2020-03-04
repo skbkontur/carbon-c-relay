@@ -2363,11 +2363,13 @@ router_contains_listener(router *rtr, listener *lsnr)
 				if (lsnr->port == rwalk->port && strcmp(l, r) == 0) {
 #ifdef HAVE_SSL
 					/* check pemmtimespec */
-					if ((lsnr->transport & ~0xFFFF) == W_SSL &&
+					if ((lsnr->transport & ~0xFFFF) != W_SSL ||
+						((lsnr->transport & ~0xFFFF) == W_SSL &&
 							lsnr->pemmtimespec.tv_sec ==
 									rwalk->pemmtimespec.tv_sec &&
 							lsnr->pemmtimespec.tv_nsec ==
 									rwalk->pemmtimespec.tv_nsec)
+						)
 #endif
 					{
 						match = 1;
