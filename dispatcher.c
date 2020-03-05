@@ -716,7 +716,6 @@ dispatch_workercnt(void)
 int
 dispatch_connection_to_worker(dispatcher *d, connection *conn)
 {
-	conn->d = d;
 	if (conn->noexpire) {
 		conn->ev = event_new(d->evbase, conn->sock, EV_READ | EV_PERSIST, dispatch_read_cb, conn);
 	} else {
@@ -771,12 +770,12 @@ __dispatch_addlistener(dispatcher *d, listener *lsnr)
 		 * that connection won't be closed after being idle, and won't
 		 * count that connection as an incoming connection either. */
 		for (socks = lsnr->socks; socks->sock != -1; socks++) {
-			conn = dispatch_addconnection(socks->sock, lsnr, d, 0, 1);
+			conn = dispatch_addconnection(socks->sock, lsnr, dispatch_worker_with_low_connections(), 0, 1);
 
 			if (conn == NULL)
 				return 1;
 
-			socks->d = d;
+			socks->d = conn->d;
 			socks->ev = conn->ev;
 			socks->lsnr = lsnr;
 
