@@ -366,7 +366,6 @@ lzflush(z_strm *strm)
 static inline int
 lzclose(z_strm *strm)
 {
-	lzflush(strm);
 	free(strm->hdl.z.cbuf);
 	return strm->nextstrm->strmclose(strm->nextstrm);
 }
@@ -918,7 +917,6 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 	ssize_t slen;
 	const char **p;
 	queue *squeue;
-	unsigned char cnt;
 	size_t qfree;
 	const char **metric = self->batch;
 	*metric = NULL;
@@ -1116,20 +1114,8 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 
 		for (; *metric != NULL; metric++) {
 			len = *(size_t *)(*metric);
-			const char *m;
-			for (cnt = 0, m = *metric + sizeof(size_t); cnt < 10; cnt++) {
-				if ((slen = self->strm->strmwrite(self->strm, m, len)) != len) {
-					if (slen >= 0) {
-						m += slen;
-						len -= slen;
-					} else if (errno != EINTR) {
-						break;
-					}
-				} else {
-					break;
-				}
-			}
-			if (slen != len) {
+			const char *m = *metric + sizeof(size_t);
+			if ((slen = self->strm->strmwrite(self->strm, m, len)) != len) {
 				/* not fully sent (after tries), or failure
 				 * close connection regardless so we don't get
 				 * synchonisation problems */
@@ -1247,10 +1233,13 @@ server_queuereader(void *d)
 		}
 	}
 
+	if (self->fd >= 0) {
+		self->strm->strmflush(self->strm);
+		self->strm->strmclose(self->strm);
+	}
+
 	__sync_and_and_fetch(&(self->running), 0);
 
-	if (self->fd >= 0)
-		self->strm->strmclose(self->strm);
 	if (self->secpos != NULL)
 		free(self->secpos);
 	return NULL;
