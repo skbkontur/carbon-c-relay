@@ -44,6 +44,10 @@ extern char noexpire;
 extern char *sslCA;
 extern char sslCAisdir;
 
+extern int queuefree_threshold_start;
+extern int queuefree_threshold_end;
+extern int shutdown_timeout;
+
 enum logdst { LOGOUT, LOGERR };
 
 typedef enum {
