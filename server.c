@@ -112,6 +112,7 @@ struct _server {
 	size_t secondariescnt;
 	char failover:1;
 	char failure;       /* full byte for atomic access */
+	char alive;       /* full byte for atomic access */
 	char running;       /* full byte for atomic access */
 	char keep_running;  /* full byte for atomic access */
 	unsigned char stallseq;  /* full byte for atomic access */
@@ -925,8 +926,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 	if (self->qfree_threshold != queuefree_threshold_start && ! QUEUE_FREE_CRITICAL(qfree, self)) {
 		/* threshold for cancel rebalance */
 		self->qfree_threshold = queuefree_threshold_start;
-		if (mode && MODE_DEBUG)
-			logerr("throttle end %s:%u: waiting for %zu metrics\n",
+		tracef("throttle end %s:%u: waiting for %zu metrics\n",
 				self->ip, self->port, queue_len(self->queue));
 	}
 	if (qfree == qsize) {
@@ -980,9 +980,8 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		if (self->qfree_threshold == queuefree_threshold_start && QUEUE_FREE_CRITICAL(qfree, self)) {
 			/* destination overloaded, set threshold for destination recovery */
 			self->qfree_threshold = queuefree_threshold_end;
-			if (mode && MODE_DEBUG)
-				logerr("throttle %s:%u: waiting for %zu metrics\n",
-						self->ip, self->port, queue_len(self->queue));
+			tracef("throttle %s:%u: waiting for %zu metrics\n",
+					self->ip, self->port, queue_len(self->queue));
 		}
 
 		/* offload data from our queue to our secondaries
@@ -1004,18 +1003,21 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			squeue = self->secondaries[self->secpos[i]]->queue;
 			if (!self->failover && self->fd > 0) {
 				size_t sqfree = queue_free(squeue);
-				if (sqfree <= qfree) {
+				if (sqfree <= qfree + 2 *self->bsize ) {
 					squeue = NULL;
 					continue;
 				}
 			}
-			if (*metric == NULL) {
-				/* send up to batch size of our queue to this queue */
-				len = queue_dequeue_vector(
-						self->batch, self->queue, self->bsize);
-				self->batch[len] = NULL;
-				metric = self->batch;
+			if (shutdown) {
+				logerr("shutting down %s:%u: waiting for requeue %zu metrics to %s:%u\n",
+						self->ip, self->port, queue_len(self->queue),
+						self->secondaries[self->secpos[i]]->ip, self->secondaries[self->secpos[i]]->port);
 			}
+			/* send up to batch size of our queue to this queue */
+			len = queue_dequeue_vector(
+					self->batch, self->queue, self->bsize);
+			self->batch[len] = NULL;
+			metric = self->batch;
 
 			for (; *metric != NULL; metric++) {
 				if (!queue_putback(squeue, *metric))
@@ -1044,7 +1046,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 				__sync_and_and_fetch(&(self->failure), 0);
 				__sync_add_and_fetch(&(self->failure), 1);
 			}
-		} else if (QUEUE_FREE_CRITICAL(qfree, self)) {
+		} else if (QUEUE_FREE_CRITICAL(qfree, self) && !shutdown) {
 			/* skip overloaded destination, if secondaries exist */
 			return -1;
 		}
@@ -1085,11 +1087,24 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			}
 			if (squeue == NULL)
 				return 0;
+			if (shutdown) {
+				/* be noisy during shutdown so we can track any slowing down
+				 * servers, possibly preventing us to shut down */
+				logerr("shutting down %s:%u: waiting for %zu metrics from %s:%u\n",
+						self->ip, self->port, queue_len(self->queue),
+						self->secondaries[self->secpos[i]]->ip, self->secondaries[self->secpos[i]]->port);
+			}
 			len = queue_dequeue_vector(self->batch, squeue, self->bsize);
 		} else {
 			return 0;
 		}
 	} else {
+		if (shutdown) {
+			/* be noisy during shutdown so we can track any slowing down
+			 * servers, possibly preventing us to shut down */
+			logerr("shutting down %s:%u: waiting for %zu metrics\n",
+					self->ip, self->port, queue_len(self->queue));
+		}
 		len = queue_dequeue_vector(self->batch, self->queue, self->bsize);
 	}
 	self->batch[len] = NULL;
@@ -1105,12 +1120,6 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			logerr("server %s:%u: OK after probe\n", self->ip, self->port);
 		__sync_and_and_fetch(&(self->failure), 0);
 	} else if (len != 0) {
-		if (shutdown) {
-			/* be noisy during shutdown so we can track any slowing down
-			 * servers, possibly preventing us to shut down */
-			logerr("shutting down %s:%u: waiting for %zu metrics\n",
-					self->ip, self->port, len + queue_len(self->queue));
-		}
 
 		for (; *metric != NULL; metric++) {
 			len = *(size_t *)(*metric);
@@ -1195,10 +1204,12 @@ server_queuereader(void *d)
 	size_t qsize = queue_size(self->queue);
 	struct timeval start, stop;
 
-	self->running = 1;
 	char shutdown = 0;
 	ssize_t timeout = shutdown_timeout * 1000000;
 	ssize_t ret;
+
+	self->running = 1;
+	self->alive = 1;
 
 	while (!shutdown) {
 		gettimeofday(&start, NULL);
@@ -1209,7 +1220,7 @@ server_queuereader(void *d)
 		if (ret <= 0) {
 			/* nothing to do or error, so slow down for a bit
 			 * TODO replace with poll-like model */
-			usleep((200 + (rand() % 100)) * 1000);  /* 200ms - 300ms */
+			usleep((300 + (rand() % 100)) * 1000);  /* 300ms - 400ms */
 		} else {
 			usleep((20 + (rand() % 10)) * 1000);  /* 20ms - 30ms */
 		}
@@ -1217,16 +1228,36 @@ server_queuereader(void *d)
 
 	while (1) {
 		gettimeofday(&start, NULL);
-		shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
+		__sync_bool_compare_and_swap(&(self->alive), 0, 1);
 		ret = server_queueread(self, qsize, &idle, shutdown);
 		gettimeofday(&stop, NULL);
 		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
 		if (ret == 0) {
-			break;
+			__sync_bool_compare_and_swap(&(self->alive), 1, 0);
+			if (self->secondariescnt > 0) {
+				int c;
+				char empty = 1;
+				/* workaraound: prevent exit last live reader
+				 * if other server_queuereader read last metrics from queue and can't send it
+				 */
+				for (c = 0; c < self->secondariescnt; c++) {
+					if (self != self->secondaries[c] &&
+						__sync_bool_compare_and_swap(&(self->secondaries[c]->alive), 1, 1)) {
+						empty = 0;
+						break;
+					}
+				}
+				if (empty) {
+					break;
+				}
+				usleep((100 + (rand() % 100)) * 1000);  /* 100ms - 200ms */
+			} else {
+				break;
+			}
 		} else if (ret < 0) {
 			/* error, so slow down for a bit
 			 * TODO replace with poll-like model */
-			usleep((200 + (rand() % 100)) * 1000);  /* 200ms - 300ms */
+			usleep((300 + (rand() % 100)) * 1000);  /* 300ms - 400ms */
 		}
 		gettimeofday(&stop, NULL);
 		timeout -= timediff(start, stop);
@@ -1234,6 +1265,7 @@ server_queuereader(void *d)
 			break;
 		}
 	}
+	__sync_bool_compare_and_swap(&(self->alive), 1, 0);
 
 	if (self->fd >= 0) {
 		self->strm->strmflush(self->strm);
