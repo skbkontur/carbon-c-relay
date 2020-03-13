@@ -925,7 +925,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 	if (self->qfree_threshold != queuefree_threshold_start && ! QUEUE_FREE_CRITICAL(qfree, self)) {
 		/* threshold for cancel rebalance */
 		self->qfree_threshold = queuefree_threshold_start;
-		/* if (mode && MODE_DEBUG) */
+		if (mode && MODE_DEBUG)
 			logerr("throttle end %s:%u: waiting for %zu metrics\n",
 				self->ip, self->port, queue_len(self->queue));
 	}
@@ -980,7 +980,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		if (self->qfree_threshold == queuefree_threshold_start && QUEUE_FREE_CRITICAL(qfree, self)) {
 			/* destination overloaded, set threshold for destination recovery */
 			self->qfree_threshold = queuefree_threshold_end;
-			/* if (mode && MODE_DEBUG) */
+			if (mode && MODE_DEBUG)
 				logerr("throttle %s:%u: waiting for %zu metrics\n",
 						self->ip, self->port, queue_len(self->queue));
 		}
@@ -1210,6 +1210,8 @@ server_queuereader(void *d)
 			/* nothing to do or error, so slow down for a bit
 			 * TODO replace with poll-like model */
 			usleep((200 + (rand() % 100)) * 1000);  /* 200ms - 300ms */
+		} else {
+			usleep((20 + (rand() % 10)) * 1000);  /* 20ms - 30ms */
 		}
 	}
 
