@@ -1,0 +1,19 @@
+listen type linemode transport plain 127.0.0.1:@port@ proto tcp;
+listen type linemode transport plain 127.0.0.1:@port@ proto udp;
+
+cluster one forward
+	127.0.0.1:2003
+	127.0.0.1:2004
+	;
+
+cluster two any_of
+	127.0.0.1:2013
+	127.0.0.1:2014
+	;
+
+cluster three failover
+	127.0.0.1:2023
+	127.0.0.1:2024
+	;
+
+match * send to default;
