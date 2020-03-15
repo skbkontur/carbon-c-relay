@@ -912,7 +912,7 @@ static inline int server_secpos_alloc(server *self)
 	return 0;
 }
 
-static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shutdown)
+static int server_queueread(server *self, size_t qsize, char *idle, char shutdown)
 {
 	size_t len;
 	ssize_t slen;
@@ -923,7 +923,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 	*metric = NULL;
 
 	qfree = queue_free(self->queue);
-	if (self->qfree_threshold != queuefree_threshold_start && ! QUEUE_FREE_CRITICAL(qfree, self)) {
+	if (self->secondariescnt > 0 && self->qfree_threshold != queuefree_threshold_start && ! QUEUE_FREE_CRITICAL(qfree, self)) {
 		/* threshold for cancel rebalance */
 		self->qfree_threshold = queuefree_threshold_start;
 		tracef("throttle end %s:%u: waiting for %zu metrics\n",
@@ -946,9 +946,21 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			self->strm->strmflush(self->strm);
 		/* if we are in failure mode, keep checking if we can
 		 * connect, this avoids unnecessary queue moves */
-		if (__sync_bool_compare_and_swap(&(self->failure), 0, 0) && (!shutdown || self->secondariescnt == 0))
-			/* it makes no sense to try and do something, so skip */
+		if (self->secondariescnt == 0)
 			return 0;
+		else {
+			int i;
+			int queued = 0;
+			for (i = 0; i < self->secondariescnt; i++) {
+				if (self != self->secondaries[i] && queue_len(self->secondaries[i]->queue) > 0) {
+					queued = 1;
+					break;
+				}
+			}
+			if (queued == 0) {
+				return 0;
+			}
+		}
 	} else if (self->secondariescnt > 0 &&
 			   (__sync_add_and_fetch(&(self->failure), 0) >= FAIL_WAIT_TIME ||
 				QUEUE_FREE_CRITICAL(qfree, self)||
@@ -958,9 +970,6 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		size_t req = 0;
 
 		if (self->secondariescnt > 0) {
-			if (self->secpos == NULL && server_secpos_alloc(self) == -1) {
-				return -1;
-			}
 			if (!self->failover) {
 				/* randomise the failover list such that in the
 				 * grand scheme of things we don't punish the first
@@ -1056,7 +1065,6 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME)
 			__sync_sub_and_fetch(&(self->failure), 1);
 	}
-
 	/* at this point we've got work to do, if we're instructed to
 	 * shut down, however, try to get everything out of the door
 	 * (until we fail, see top of this loop) */
@@ -1070,11 +1078,8 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 
 	/* send up to batch size */
 	if (qfree == qsize) {
-		int i;
 		if (self->secondariescnt > 0) {
-			if (self->secpos == NULL && server_secpos_alloc(self) == -1) {
-				return -1;
-			}
+			int i;
 			squeue = NULL;
 			for (i = 0; i < self->secondariescnt; i++) {
 				/* both conditions below make sure we skip ourself */
@@ -1272,10 +1277,7 @@ server_queuereader(void *d)
 		self->strm->strmclose(self->strm);
 	}
 
-	__sync_and_and_fetch(&(self->running), 0);
-
-	if (self->secpos != NULL)
-		free(self->secpos);
+	__sync_bool_compare_and_swap(&(self->running), 1, 0);
 	return NULL;
 }
 
@@ -1304,6 +1306,7 @@ server_new(
 	if ((ret = malloc(sizeof(server))) == NULL)
 		return NULL;
 
+	ret->secpos = NULL;
 	ret->type = type;
 	ret->transport = transport;
 	ret->ctype = ctype;
@@ -1521,6 +1524,8 @@ server_cmp(server *s, struct addrinfo *saddr, const char *ip, unsigned short por
 char
 server_start(server *s)
 {
+	if (server_secpos_alloc(s) == -1)
+		return -1;
 	return pthread_create(&s->tid, NULL, &server_queuereader, s);
 }
 
@@ -1680,6 +1685,7 @@ server_free(server *s) {
 		free(s->strm->nextstrm);
 	free(s->strm);
 	s->ip = NULL;
+	free(s->secpos);
 	free(s);
 }
 
