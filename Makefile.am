@@ -121,6 +121,7 @@ CRTESTS = \
 	issue357 \
 	issue369 \
 	server-type \
+	reload \
 	basic \
 	metriclimits \
 	buftest \
