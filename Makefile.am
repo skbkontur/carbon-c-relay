@@ -121,10 +121,13 @@ CRTESTS = \
 	issue357 \
 	issue369 \
 	server-type \
+	reload \
 	basic \
 	metriclimits \
 	buftest \
 	large \
+	dual-udp \
+	dual-tcp \
 	dual-gzip \
 	large-gzip \
 	dual-large-gzip \

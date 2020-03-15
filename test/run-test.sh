@@ -340,6 +340,201 @@ run_servertest() {
 	return ${ret}
 }
 
+run_reloadtest() {
+	local confarg=$1
+	local payload=$2
+
+	local mode=SINGLE
+	local tmpdir=$(mktemp -d)
+	local output=
+	local pidfile=
+	local unixsock=
+	local port=
+	local conf="${tmpdir}"/conf
+	local dataout="${tmpdir}"/data.out
+	local confarg=$1
+	local payload=$2
+	local transport=$3
+	local payloadexpect="${payload}out"
+	local test=${confarg%.*}
+	local confarg2=${test}-2.${confarg##*.}
+
+	echo -n "${test}: "
+	[[ -e ${confarg2} ]] || {
+		echo "${confarg2} not exist" >&2
+		return 1
+	}
+
+	local start_server_result
+
+	write_config() {
+		local conf_arg=$1
+		local conf=$2
+		local port=$3
+		local unixsock="$4"
+		[ -e "${conf_arg}" ] || {
+			echo ${conf_arg} not exist
+			return 1
+		}
+		# write config file with known listener
+		{
+			echo "# relay, mode ${mode}"
+			echo "listen type linemode transport plain"
+			echo "    ${unixsock} proto unix"
+			echo "    ;"
+			echo
+			echo "cluster default"
+			echo "    file ${dataout}"
+			echo "    ;"
+			echo
+			if [[ -n ${relayargs} ]] ; then
+				echo "# extra arguments given to ${EXEC}:"
+				echo "#   ${relayargs}"
+				echo
+			fi
+			echo "# contents from ${confarg} below this line"
+			sed \
+				-e "s/@port@/${port}/g" \
+				-e "s/@remoteport@/${remoteport}/g" \
+				-e "s/@cert@/${cert}/g" \
+				"${conf_arg}"
+		} > "${conf}"
+		return $?
+	}
+
+	start_server() {
+		local conf=$1
+		local output="${tmpdir}"/relay.out
+		local pidfile="${tmpdir}"/pidfile
+
+		local relayargs=
+		[[ -e ${test}.args ]] && relayargs=$(< ${test}.args)
+		[[ -e ${test}.args ]] && relayargs=$(< ${test}.args)
+
+		${EXEC} -d -w 1 -f "${conf}" -Htest.hostname -s \
+			-l "${output}" -P "${pidfile}" ${relayargs} >/dev/null &
+		ret=$?
+		if [[ $ret == 0 ]] ; then
+			sleep 1
+			local pid=$(< "${pidfile}")
+			if [[ "$pid" == "" ]] ; then
+				ret=1
+			else
+				ps -p ${pid} >& /dev/null || ret=1
+			fi
+		fi
+		if [[ $ret != 0 ]] ; then
+			echo "failed to start relay ${id} in ${PWD}:"
+			echo ${EXEC} -d -f "${conf}" -Htest.hostname -s -D -l \
+				"${output}" -P "${pidfile}" ${relayargs}
+			echo "=== ${conf} ==="
+			cat "${conf}"
+			echo "=== ${output} ==="
+			cat "${output}"
+			return 1
+		fi
+
+		start_server_result=( ${port} ${unixsock} ${pid} ${output} )
+	}
+
+	# determine a free port to use
+	local start_server_lastport=3020  # TODO
+	local port=${start_server_lastport}
+	local unixsock="${tmpdir}/sock.${port}"
+	write_config ${confarg} ${conf} $port ${unixsock} || return 1
+	start_server ${conf} || return 1
+	pid=${start_server_result[2]}
+	output=${start_server_result[3]}
+
+	#local smargs=
+	#[[ -e ${test}.sargs ]] && smargs=$(< ${test}.sargs)
+	#${SMEXEC} ${SMARG} ${smargs} "${unixsock}" < "${payload}"
+	#if [[ $? != 0 ]] ; then
+		#echo "failed to send payload"
+		#exit 1
+		#return 1
+	#fi
+
+	reload_ret=0
+	for conf_arg in ${confarg2} ${confarg} ${confarg2} ; do
+		echo -n "${conf_arg} "
+		write_config ${conf_arg} ${conf} ${port} ${unixsock} || return 1
+		> "${output}"
+		kill -SIGHUP ${pid}
+		# allow everything to be processed
+		reload_ret=1
+		for i in 1 2 3 ; do
+			sleep 1
+			ps -p ${pid} >/dev/null || break
+			grep 'SIGHUP handler complete' "${tmpdir}"/relay.out >/dev/null && {
+				reload_ret=0
+				break
+			}
+		done
+		[ "${reload_ret}" == "1" ] && echo FAIL
+
+		${SMEXEC} "${unixsock}" < "${payload}" || {
+			echo "FAIL unix socket send"
+			reload_ret=1
+		}
+		${SMEXEC} -t 127.0.0.1:${port} < "${payload}" || {
+			echo "FAIL tcp send"
+			reload_ret=1
+		}
+		${SMEXEC} -u 127.0.0.1:${port} < "${payload}" || {
+			echo "FAIL udp send"
+			reload_ret=1
+		}
+		[ "${reload_ret}" == "1" ] && {
+			echo "=== ${conf} ==="
+			cat "${conf}"
+			echo "=== ${output} ==="
+			cat "${output}"
+			break
+		}
+
+		# determine next port for use
+		: $((port++)) #TODO
+
+		echo PASS
+		echo -n "${test}: "
+	done
+
+	# kill and wait for relay to come down
+	ps -p ${pid} >/dev/null &&	kill ${pid}
+	wait ${pid}
+	ret=$?
+	if [ "${ret}" == "0" -a "${reload_ret}" == "0" ]; then
+		echo -n "output "
+		${DIFF} "${payloadexpect}" "${dataout}" \
+				--label "${payloadexpect}" --label "${payloadexpect}" > "${dataout}.diff"
+		if [[ $? == 0 ]] ; then
+			echo "PASS"
+			ret=0
+		else
+			echo "FAIL"
+			cat "${dataout}.diff" | ${POST}
+			ret=1
+		fi
+	elif [ "${ret}" != "0" ]; then
+		[ "${reload_ret}" == "0" ] && echo FAIL
+		echo "relay exit with SIG$(kill -l $(($ret-128))) signal"
+	else
+		ret=1
+	fi
+
+	if [[ -n ${RUN_TEST_DROP_IN_SHELL} ]] ; then
+		echo "dropping shell in ${tmpdir}"
+		( unset DYLD_FORCE_FLAT_NAMESPACE DYLD_INSERT_LIBRARIES LD_PRELOAD;
+		  cd ${tmpdir} && ${SHELL} )
+	fi
+
+	# cleanup
+	rm -Rf "${tmpdir}"
+
+	return ${ret}
+}
+
 while [[ -n $1 ]] ; do
 	case "$1" in
 		--approve|-a)
@@ -384,6 +579,12 @@ for t in $* ; do
 		run_configtest "${EFLAGS} -d" "${t}.dbg" || {
 			: $((tstfail++))
 			tstfailed="${tstfailed} ${t}.tst"
+		}
+	elif [[ -e ${t}.rtst ]] ; then
+		: $((tstcnt++))
+		run_reloadtest "${t}.rtst" "${t}.payload" || {
+			: $((tstfail++))
+			tstfailed="${tstfailed} ${t}.rtst"
 		}
 	else
 		if [[ -e ${t}.stst ]] ; then
@@ -430,7 +631,8 @@ rm -f buftest.payload buftest.payloadout \
 	large.payload large.payloadout large-ssl.payload large-ssl.payloadout \
 	large-compress.payload large-compress.payloadout \
 	large-gzip.payload large-gzip.payloadout large-lz4.payload large-lz4.payloadout \
-	dual-large-gzip.payload dual-large-gzip.payloadout dual-large-lz4.payload dual-large-lz4.payloadout dual-large-ssl.payload dual-large-ssl.payloadout
+	dual-large-gzip.payload dual-large-gzip.payloadout dual-large-lz4.payload dual-large-lz4.payloadout \
+	dual-large-ssl.payload dual-large-ssl.payloadout dual-large-compress.payload dual-large-compress.payloadout
 
 echo "Ran ${tstcnt} tests with ${tstfail} failing"
 [ "${tstfailed}" == "" ] || echo "failed: ${tstfailed}"
