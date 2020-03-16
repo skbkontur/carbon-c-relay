@@ -2902,6 +2902,15 @@ router_route_intern(
 						(*curlen)++;
 						wassent = 1;
 					}	break;
+					case LB: {
+						/* take first server */
+						ret[*curlen].dest = d->cl->members.anyof->servers[0];
+
+						produce_metric(ret[*curlen]);
+						set_metric(ret[*curlen]);
+						(*curlen)++;
+						wassent = 1;
+					}       break;
 					case CARBON_CH:
 					case FNV1A_CH:
 					case JUMP_CH: {
