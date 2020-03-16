@@ -164,8 +164,10 @@ bindlistenip(listener *lsnr, unsigned int backlog)
 	}
 	if (binderr != 0) {
 		/* close all opened sockets */
-		for (--sockcur; sockcur >= 0; sockcur--)
+		for (--sockcur; sockcur >= 0; sockcur--) {
 			close(lsnr->socks[sockcur].sock);
+		}
+		lsnr->socks[0].sock = -1;
 		return 1;
 	}
 	lsnr->socks[sockcur].sock = -1;
