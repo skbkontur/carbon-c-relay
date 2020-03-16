@@ -551,6 +551,14 @@ while [[ -n $1 ]] ; do
 	shift
 done
 
+ufail=0
+for test in ../test_* ; do
+	[ -x "${test}" ] || continue
+	echo -n "$( basename ${test} )"
+	${test} || ufail=1
+done
+[ "${ufail}" == "1" ] && exit 1
+
 echo -n "generating datasets ..."
 buftest_generate
 large_generate

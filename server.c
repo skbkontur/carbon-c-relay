@@ -58,6 +58,10 @@
 #define DISCONNECT_WAIT_TIME   12  /* 12 * 250ms = 3s */
 #define QUEUE_FREE_CRITICAL(FREE, s)  (FREE < s->qfree_threshold)
 
+int queuefree_threshold_start = 0;
+int queuefree_threshold_end = 0;
+int shutdown_timeout = 120; /* 120s */
+
 typedef struct _z_strm {
 	ssize_t (*strmwrite)(struct _z_strm *, const void *, size_t);
 	int (*strmflush)(struct _z_strm *);
