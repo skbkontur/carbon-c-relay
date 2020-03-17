@@ -1018,7 +1018,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			squeue = self->secondaries[self->secpos[i]]->queue;
 			if (!self->failover && self->fd > 0) {
 				size_t sqfree = queue_free(squeue);
-				if (sqfree <= qfree + 2 *self->bsize ) {
+				if (sqfree <= qfree + 10 *self->bsize ) {
 					squeue = NULL;
 					continue;
 				}
@@ -1065,11 +1065,9 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			/* skip overloaded destination, if secondaries exist */
 			return -1;
 		}
-	} else if (__sync_add_and_fetch(&(self->failure), 0) > 0) {
-		usleep((200 + (rand() % 100)) * 1000);  /* 200ms - 300ms */
+	} else if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME) {
 		/* avoid overflowing */
-		if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME)
-			__sync_sub_and_fetch(&(self->failure), 1);
+		__sync_sub_and_fetch(&(self->failure), 1);
 	}
 	/* at this point we've got work to do, if we're instructed to
 	 * shut down, however, try to get everything out of the door
@@ -1717,10 +1715,12 @@ server_swap_queue(server *l, server *r)
 	l->dropped = r->dropped;
 	l->stalls = r->stalls;
 	l->ticks = r->ticks;
+	l->requeue = r->requeue;
 	l->prevmetrics = r->prevmetrics;
 	l->prevdropped = r->prevdropped;
 	l->prevstalls = r->prevstalls;
 	l->prevticks = r->prevticks;
+	l->prevrequeue = r->prevrequeue;
 }
 
 /**
