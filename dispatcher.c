@@ -147,6 +147,7 @@ struct _dispatcher {
 	char tags_supported;
 	int maxinplen;
 	int maxmetriclen;
+	struct timeval stop;
 };
 
 struct _connection {
@@ -566,9 +567,10 @@ void dispatch_read_cb(int fd, short flags, void *arg)
 {
 	connection *conn = (connection *) arg;
 	dispatcher *d  = conn->d;
-	struct timeval start, stop;
+	struct timeval start;
 
 	gettimeofday(&start, NULL);
+	__sync_add_and_fetch(&(d->sleeps), timediff(d->stop, start));
 	if (flags & EV_TIMEOUT) {
 		__sync_lock_test_and_set(&(conn->takenby), conn->d->id);
 		tracef("dispatcher: timeout socket %d\n", conn->sock);
@@ -585,8 +587,8 @@ void dispatch_read_cb(int fd, short flags, void *arg)
 		dispatch_connection(conn, conn->d, start);
 	}
 
-	gettimeofday(&stop, NULL);
-	__sync_add_and_fetch(&(d->ticks), timediff(start, stop));
+	gettimeofday(&d->stop, NULL);
+	__sync_add_and_fetch(&(d->ticks), timediff(start, d->stop));
 }
 
 void dispatch_accept_cb(int fd, short flags, void *arg)
@@ -596,7 +598,10 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
     int client;
 	struct sockaddr addr;
 	socklen_t addrlen = sizeof(addr);
+	struct timeval start;
 
+	gettimeofday(&start, NULL);
+	__sync_add_and_fetch(&(d->sleeps), timediff(d->stop, start));
 	if ((client = accept(lsock->sock, &addr, &addrlen)) < 0)
 	{
 		logerr("dispatch: failed to "
@@ -612,6 +617,8 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
 		(void) fcntl(client, F_SETFL, O_NONBLOCK);
 		dispatch_addconnection(client, lsock->lsnr, dispatch_worker_with_low_connections(), 0, 0);
 	}
+	gettimeofday(&d->stop, NULL);
+	__sync_add_and_fetch(&(d->ticks), timediff(start, d->stop));
 }
 
 /**
@@ -1620,6 +1627,8 @@ dispatch_new(
 	ret->prevblackholes = 0;
 	ret->prevticks = 0;
 	ret->prevsleeps = 0;
+
+	gettimeofday(&ret->stop, NULL);
 
 	return ret;
 }
