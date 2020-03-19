@@ -1238,7 +1238,6 @@ server_queuereader(void *d)
 
 	while (1) {
 		gettimeofday(&start, NULL);
-		__sync_bool_compare_and_swap(&(self->alive), 0, 1);
 		ret = server_queueread(self, qsize, &idle, shutdown);
 		gettimeofday(&stop, NULL);
 		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
@@ -1276,7 +1275,7 @@ server_queuereader(void *d)
 		}
 	}
 	__sync_bool_compare_and_swap(&(self->alive), 1, 0);
-
+	logout("shut down %s:%d\n", self->ip, self->port);
 	if (self->fd >= 0) {
 		self->strm->strmflush(self->strm);
 		self->strm->strmclose(self->strm);
