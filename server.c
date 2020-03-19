@@ -1220,11 +1220,17 @@ server_queuereader(void *d)
 	self->alive = 1;
 
 	while (!shutdown) {
+		unsigned long diff;
 		gettimeofday(&start, NULL);
 		shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
 		ret = server_queueread(self, qsize, &idle, shutdown);
 		gettimeofday(&stop, NULL);
-		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
+		diff = timediff(start, stop);
+		if (diff <= 20000000)
+			__sync_add_and_fetch(&(self->ticks), diff);
+		else if (mode && MODE_DEBUG)
+			logerr("gettimeofday %s:%d wrong diff %lu stop (%ld - %ld) start (%ld - %ld)\n", self->ip, self->port, diff, stop.tv_sec, stop.tv_usec, stop.tv_sec, start.tv_usec);
+
 		if (ret <= 0) {
 			/* nothing to do or error, so slow down for a bit
 			 * TODO replace with poll-like model */
