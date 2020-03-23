@@ -22,6 +22,7 @@
 
 #include "router.h"
 
+int rand2();
 typedef struct _dispatcher dispatcher;
 typedef struct _connection connection;
 
