@@ -1233,7 +1233,7 @@ dispatch_addconnection_aggr(int sock)
 }
 
 /* optimized rand for perfomance */
-static int rand2()
+int rand2()
 {
     static __thread unsigned int seed = 4541;
 
