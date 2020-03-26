@@ -1194,6 +1194,39 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 		return len;
 }
 
+static int server_poll(server *self)
+{
+	if (self->fd > 0) {
+		int ret;
+		struct pollfd ufds[1];
+		ufds[0].fd = self->fd;
+		ufds[0].events = POLLOUT;
+		ret = poll(ufds, 1, 10 * 1000); /* 10s */
+		if (ret < 0) {
+			logerr("poll error: %s", strerror(errno));
+			return -1;
+		} else if (ret > 0) {
+			if (ufds[0].revents & POLLOUT) {
+				return 1;
+			} else if (ufds[0].revents & POLLHUP) {
+				logerr("closed connection to %s:%u\n",
+						self->ip, self->port);
+			} else {
+				logerr("poll error event %d for connection to %s:%u\n",
+					   ufds[0].revents, self->ip, self->port);
+			}
+		} else {
+			__sync_fetch_and_add(&(self->failure), 1); /*TIMEOUT */
+			logerr("timeout for connection to %s:%u\n",
+					self->ip, self->port);
+		}
+		self->strm->strmclose(self->strm);
+		self->fd = -1;
+		return 0;
+	}
+	return 0;
+}
+
 /**
  * Reads from the queue and sends items to the remote server.  This
  * function is designed to be a thread.  Data sending is attempted to be
@@ -1217,6 +1250,12 @@ server_queuereader(void *d)
 	self->alive = 1;
 
 	while (!shutdown) {
+		if (server_poll(self) == -1) {
+			usleep((300 + (rand2() % 100)) * 1000);  /* 300ms - 400ms */
+			shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
+			continue;
+		}
+
 		gettimeofday(&start, NULL);
 		shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
 		ret = server_queueread(self, shutdown, &idle);
@@ -1235,9 +1274,13 @@ server_queuereader(void *d)
 
 	while (1) {
 		gettimeofday(&start, NULL);
-		ret = server_queueread(self, shutdown, &idle);
-		gettimeofday(&stop, NULL);
-		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
+		if ((ret = server_poll(self)) > -1) {
+			struct timeval started;
+			gettimeofday(&started, NULL);
+			ret = server_queueread(self, shutdown, &idle);
+			gettimeofday(&stop, NULL);
+			__sync_add_and_fetch(&(self->ticks), timediff(started, stop));
+		}
 		if (ret == 0) {
 			__sync_bool_compare_and_swap(&(self->alive), 1, 0);
 			if (self->secondariescnt > 0) {
