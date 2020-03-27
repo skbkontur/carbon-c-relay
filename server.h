@@ -28,7 +28,7 @@
 
 extern int queuefree_threshold_start;
 extern int queuefree_threshold_end;
-extern int shutdown_timeout;
+extern long long shutdown_timeout;
 
 typedef struct _server server;
 

@@ -60,7 +60,7 @@
 
 int queuefree_threshold_start = 0;
 int queuefree_threshold_end = 0;
-int shutdown_timeout = 120; /* 120s */
+long long shutdown_timeout = 120 * 1000000LL; /* 120s */
 
 typedef struct _z_strm {
 	ssize_t (*strmwrite)(struct _z_strm *, const void *, size_t);
@@ -1243,8 +1243,8 @@ server_queuereader(void *d)
 	struct timeval start, stop;
 
 	char shutdown = 0;
-	ssize_t timeout = shutdown_timeout * 1000000;
 	ssize_t ret;
+	long long timed;
 
 	self->running = 1;
 	self->alive = 1;
@@ -1272,8 +1272,8 @@ server_queuereader(void *d)
 		}
 	}
 
+	gettimeofday(&start, NULL);
 	while (1) {
-		gettimeofday(&start, NULL);
 		if ((ret = server_poll(self)) > -1) {
 			struct timeval started;
 			gettimeofday(&started, NULL);
@@ -1281,7 +1281,9 @@ server_queuereader(void *d)
 			gettimeofday(&stop, NULL);
 			__sync_add_and_fetch(&(self->ticks), timediff(started, stop));
 		}
-		if (ret == 0) {
+		if (ret > 0) {
+			__sync_bool_compare_and_swap(&(self->alive), 0, 1);
+		} else if (ret == 0) {
 			__sync_bool_compare_and_swap(&(self->alive), 1, 0);
 			if (self->secondariescnt > 0) {
 				int c;
@@ -1303,14 +1305,14 @@ server_queuereader(void *d)
 			} else {
 				break;
 			}
-		} else if (ret < 0) {
+		} else {
 			/* error, so slow down for a bit
 			 * TODO replace with poll-like model */
 			usleep((300 + (rand2() % 100)) * 1000);  /* 300ms - 400ms */
 		}
 		gettimeofday(&stop, NULL);
-		timeout -= timediff(start, stop);
-		if (timeout <= 0) {
+		timed = timediff(start, stop);
+		if (timed >= shutdown_timeout) {
 			break;
 		}
 	}

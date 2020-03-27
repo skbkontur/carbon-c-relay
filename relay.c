@@ -394,7 +394,7 @@ do_usage(char *name, int exitcode)
 	printf("  -q  server queue size, defaults to %d\n", queuesize);
 	printf("  -F  server queue free size threshold (for end rebalance) (pcnt), defaults to %d\n", queuefree_threshold_end);
 	printf("  -S  server queue free size threshold (for start rebalance) (pcnt), defaults to %d\n", queuefree_threshold_start);
-	printf("  -W  server shutdown timeout in seconds, defaults to %d\n", shutdown_timeout);
+	printf("  -W  server shutdown timeout in seconds, defaults to %lld\n", shutdown_timeout);
 	printf("  -L  server max stalls, defaults to %d\n", maxstalls);
 #ifdef HAVE_SSL
 	printf("  -C  use CA <cert> to verify SSL connections\n");
@@ -512,12 +512,12 @@ main(int argc, char * const argv[])
 				queuefree_threshold_end = atoi(optarg);
 				break;
 			case 'W': {
-				int val = atoi(optarg);
-				if (val <= 0) {
-					fprintf(stderr, "error: shutdown timeout needs to be a number >=0\n");
+				long long val = atoll(optarg);
+				if (val < 0) {
+					fprintf(stderr, "error: shutdown timeout needs to be a number >0\n");
 					do_usage(argv[0], 1);
 				}
-				shutdown_timeout = val;
+				shutdown_timeout = val * 1000000LL;
 			} break;
 			case 'L':
 				maxstalls = atoi(optarg);
