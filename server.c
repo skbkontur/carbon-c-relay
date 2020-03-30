@@ -1246,7 +1246,6 @@ server_queuereader(void *d)
 
 	char shutdown = 0;
 	ssize_t ret;
-	long long timed;
 
 	self->running = 1;
 	self->alive = 1;
