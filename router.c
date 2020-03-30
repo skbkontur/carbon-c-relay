@@ -105,6 +105,26 @@ const char *con_trnsp_str[] = {
 	/* 4 */ "snappy"
 };
 
+cluster *
+cluster_new(allocator *a, char *name, char dupname, enum clusttype type)
+{
+	cluster *cl = ra_malloc(a, sizeof(cluster));
+	if (cl == NULL)
+		return NULL;
+	if (name != NULL && dupname) {
+		cl->name = ra_strdup(a, name);
+		if (cl->name == NULL) {
+			return NULL;
+		}
+	} else {
+		cl->name = name;
+	}
+	cl->type = type;
+	cl->next = NULL;
+
+	return cl;
+}
+
 /**
  * Frees regexes from routes.
  */
@@ -987,13 +1007,10 @@ router_add_stubroute(
 	if (d == NULL)
 		return ra_strdup(rtr->a, "malloc failed for stub destinations");
 	d->next = NULL;
-	cl = d->cl = ra_malloc(rtr->a, sizeof(cluster));
+	cl = d->cl = cluster_new(rtr->a, NULL, 0, type);
 	if (cl == NULL)
 		return ra_strdup(rtr->a, "malloc failed for stub cluster");
-	cl->name = NULL;
-	cl->type = type;
 	cl->members.routes = m;
-	cl->next = NULL;
 	err = router_add_cluster(rtr, cl);
 	if (err != NULL)
 		return err;
@@ -1269,21 +1286,13 @@ router_readconfig(router *orig,
 		ret->conf.sockbufsize = sockbufsize;
 
 		/* create virtual blackhole cluster */
-		cl = ra_malloc(ret->a, sizeof(cluster));
+		cl = cluster_new(ret->a, "blackhole", 1, BLACKHOLE);
 		if (cl == NULL) {
 			logerr("malloc failed for blackhole cluster\n");
 			router_free(ret);
 			return NULL;
 		}
-		cl->name = ra_strdup(ret->a, "blackhole");
-		if (cl->name == NULL) {
-			logerr("malloc failed for blackhole cluster name\n");
-			router_free(ret);
-			return NULL;
-		}
-		cl->type = BLACKHOLE;
 		cl->members.forward = NULL;
-		cl->next = NULL;
 		ret->clusters = cl;
 	} else {
 		ret = orig;
@@ -1699,11 +1708,8 @@ router_optimise(router *r, int threshold)
 			rwalk->stop = 0;
 			rwalk->matchtype = CONTAINS;
 			rwalk->dests = ra_malloc(r->a, sizeof(destinations));
-			rwalk->dests->cl = ra_malloc(r->a, sizeof(cluster));
-			rwalk->dests->cl->name = bwalk->pattern;
-			rwalk->dests->cl->type = GROUP;
+			rwalk->dests->cl = cluster_new(r->a, bwalk->pattern, 0, GROUP);
 			rwalk->dests->cl->members.routes = bwalk->firstroute;
-			rwalk->dests->cl->next = NULL;
 			rwalk->dests->next = NULL;
 			rwalk->next = NULL;
 			blast = bwalk->next;
