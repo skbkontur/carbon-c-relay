@@ -35,11 +35,6 @@
 #include "relay.h"
 #include "md5.h"
 
-#define SRVCNT 8
-#define REPLCNT 2
-
-unsigned char mode = 0;
-
 int
 relaylog(enum logdst dest, const char *fmt, ...)
 {
@@ -53,13 +48,14 @@ char *router_validate_address(router *rtr, char **retip, unsigned short *retport
 
 #include "minunit.h"
 
-static router *r;
-
+unsigned char mode = 0;
 char relay_hostname[256];
 #ifdef HAVE_SSL
 char *sslCA = NULL;
 char sslCAisdir = 0;
 #endif
+
+static router *r;
 
 MU_TEST(router_validate_address_hostname) {
 	char *retip;

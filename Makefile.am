@@ -96,9 +96,11 @@ EXTRA_DIST = \
 	conffile.yy.c conffile.l \
 	$(NULL)
 
-noinst_PROGRAMS = test_router
+noinst_PROGRAMS = test_router test_server
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
+test_server_SOURCES = server_test.c $(SOURCES)
+test_server_LDADD = $(RELAY_LIBS)
 
 CRTESTS = \
 	issue10 \

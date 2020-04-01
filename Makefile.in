@@ -106,7 +106,7 @@ build_triplet = @build@
 host_triplet = @host@
 bin_PROGRAMS = relay$(EXEEXT)
 check_PROGRAMS = sendmetric$(EXEEXT)
-noinst_PROGRAMS = test_router$(EXEEXT)
+noinst_PROGRAMS = test_router$(EXEEXT) test_server$(EXEEXT)
 @SSL_ENABLED_TRUE@am__append_1 = dual-ssl large-ssl dual-large-ssl
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
@@ -182,6 +182,9 @@ sendmetric_DEPENDENCIES = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 am_test_router_OBJECTS = router_test.$(OBJEXT) $(am__objects_1)
 test_router_OBJECTS = $(am_test_router_OBJECTS)
 test_router_DEPENDENCIES = $(am__DEPENDENCIES_2)
+am_test_server_OBJECTS = server_test.$(OBJEXT) $(am__objects_1)
+test_server_OBJECTS = $(am_test_server_OBJECTS)
+test_server_DEPENDENCIES = $(am__DEPENDENCIES_2)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -205,7 +208,7 @@ am__depfiles_remade = ./$(DEPDIR)/aggregator.Po \
 	./$(DEPDIR)/queue.Po ./$(DEPDIR)/receptor.Po \
 	./$(DEPDIR)/relay.Po ./$(DEPDIR)/router.Po \
 	./$(DEPDIR)/router_test.Po ./$(DEPDIR)/sendmetric.Po \
-	./$(DEPDIR)/server.Po
+	./$(DEPDIR)/server.Po ./$(DEPDIR)/server_test.Po
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -226,7 +229,8 @@ am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
 DIST_SOURCES = $(libfaketime_la_SOURCES) $(relay_SOURCES) \
-	$(sendmetric_SOURCES) $(test_router_SOURCES)
+	$(sendmetric_SOURCES) $(test_router_SOURCES) \
+	$(test_server_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -465,6 +469,8 @@ EXTRA_DIST = \
 
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
+test_server_SOURCES = server_test.c $(SOURCES)
+test_server_LDADD = $(RELAY_LIBS)
 CRTESTS = issue10 issue27 issue117 issue156 issue157 issue163 issue165 \
 	issue180 issue184 issue202 issue213 issue218 issue228 issue235 \
 	issue236 issue246 issue252 issue253 issue263 issue267 issue288 \
@@ -643,6 +649,10 @@ test_router$(EXEEXT): $(test_router_OBJECTS) $(test_router_DEPENDENCIES) $(EXTRA
 	@rm -f test_router$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(test_router_OBJECTS) $(test_router_LDADD) $(LIBS)
 
+test_server$(EXEEXT): $(test_server_OBJECTS) $(test_server_DEPENDENCIES) $(EXTRA_test_server_DEPENDENCIES) 
+	@rm -f test_server$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(test_server_OBJECTS) $(test_server_LDADD) $(LIBS)
+
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
 
@@ -665,6 +675,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/router_test.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sendmetric.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/server.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/server_test.Po@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -1036,6 +1047,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/router_test.Po
 	-rm -f ./$(DEPDIR)/sendmetric.Po
 	-rm -f ./$(DEPDIR)/server.Po
+	-rm -f ./$(DEPDIR)/server_test.Po
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-hdr distclean-libtool distclean-tags
@@ -1100,6 +1112,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/router_test.Po
 	-rm -f ./$(DEPDIR)/sendmetric.Po
 	-rm -f ./$(DEPDIR)/server.Po
+	-rm -f ./$(DEPDIR)/server_test.Po
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 
