@@ -125,6 +125,18 @@ cluster_new(allocator *a, char *name, char dupname, enum clusttype type)
 	return cl;
 }
 
+cluster *router_cluster(router *rtr, const char *clname)
+{
+	cluster *cl = rtr->clusters;
+	while (cl != NULL) {
+		if (strcmp(cl->name, clname) == 0) {
+			break;
+		}
+		cl = cl->next;
+	}
+	return cl;
+}
+
 /**
  * Frees regexes from routes.
  */

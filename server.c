@@ -56,7 +56,7 @@
 
 #define FAIL_WAIT_TIME   6  /* 6 * 250ms = 1.5s */
 #define DISCONNECT_WAIT_TIME   12  /* 12 * 250ms = 3s */
-#define QUEUE_FREE_CRITICAL(FREE, s)  (FREE < s->qfree_threshold)
+#define QUEUE_FREE_CRITICAL(FREE, s)  (FREE < __sync_fetch_and_add(&(s->qfree_threshold), 0))
 
 int queuefree_threshold_start = 0;
 int queuefree_threshold_end = 0;
@@ -902,6 +902,11 @@ char server_connect(server *self)
 	return self->fd;
 }
 
+queue *server_queue(server *s)
+{
+	return s->queue;
+}
+
 static inline int server_secpos_alloc(server *self)
 {
 	int i;
@@ -927,11 +932,10 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 	*metric = NULL;
 
 	qfree = queue_free(self->queue);
-	if (self->secondariescnt > 0 && self->qfree_threshold != queuefree_threshold_start && ! QUEUE_FREE_CRITICAL(qfree, self)) {
+	if (self->secondariescnt > 0 && ! QUEUE_FREE_CRITICAL(qfree, self)) {
 		/* threshold for cancel rebalance */
-		self->qfree_threshold = queuefree_threshold_start;
-		if (mode && MODE_DEBUG)
-			tracef("throttle end %s:%u: waiting for %zu metrics\n",
+		if (__sync_bool_compare_and_swap(&(self->qfree_threshold), queuefree_threshold_end, queuefree_threshold_start))
+			logerr("throttle end %s:%u: waiting for %zu metrics\n",
 					self->ip, self->port, queue_len(self->queue));
 	}
 	if (qfree == queue_size(self->queue)) {
@@ -990,11 +994,10 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 			}
 		}
 
-		if (self->qfree_threshold == queuefree_threshold_start && QUEUE_FREE_CRITICAL(qfree, self)) {
+		if (QUEUE_FREE_CRITICAL(qfree, self)) {
 			/* destination overloaded, set threshold for destination recovery */
-			self->qfree_threshold = queuefree_threshold_end;
-			if (mode && MODE_DEBUG)
-				tracef("throttle %s:%u: waiting for %zu metrics\n",
+			if (__sync_bool_compare_and_swap(&(self->qfree_threshold), queuefree_threshold_start, queuefree_threshold_end))
+				logerr("throttle %s:%u: waiting for %zu metrics\n",
 						self->ip, self->port, queue_len(self->queue));
 		}
 
@@ -1064,7 +1067,8 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 			/* skip overloaded destination, if secondaries exist */
 			return -1;
 		}
-	} else if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME) {
+	}
+	if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME) {
 		/* avoid overflowing */
 		__sync_sub_and_fetch(&(self->failure), 1);
 	}
@@ -1246,7 +1250,6 @@ server_queuereader(void *d)
 
 	char shutdown = 0;
 	ssize_t ret;
-	long long timed;
 
 	self->running = 1;
 	self->alive = 1;
@@ -1263,14 +1266,8 @@ server_queuereader(void *d)
 		ret = server_queueread(self, shutdown, &idle);
 		gettimeofday(&stop, NULL);
 		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
-		if (ret <= 0) {
-			/* nothing to do or error, so slow down for a bit
-			 * TODO replace with poll-like model */
-			usleep((300 + (rand2() % 100)) * 1000);  /* 300ms - 400ms */
-		} else if (ret < self->bsize) {
+		if (ret < self->bsize) {
 			usleep((100 + (rand2() % 100)) * 1000);  /* 100ms - 200ms */
-		} else {
-			usleep(2 * 1000);  /* 2ms */
 		}
 	}
 
