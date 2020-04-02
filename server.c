@@ -962,19 +962,6 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 		 * connect, this avoids unnecessary queue moves */
 		if (self->secondariescnt == 0)
 			return 0;
-		else {
-			int i;
-			int queued = 0;
-			for (i = 0; i < self->secondariescnt; i++) {
-				if (self != self->secondaries[i] && queue_len(self->secondaries[i]->queue) > 0) {
-					queued = 1;
-					break;
-				}
-			}
-			if (queued == 0) {
-				return 0;
-			}
-		}
 	} else if (self->secondariescnt > 0 && !shutdown && /* don't requeue when shutdown - it will do from free server */
 			   (__sync_add_and_fetch(&(self->failure), 0) >= FAIL_WAIT_TIME ||
 				QUEUE_FREE_CRITICAL(qfree, self)))
@@ -1058,20 +1045,6 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 			free((char *)*metric);
 			__sync_add_and_fetch(&(self->dropped), 1);
 		}
-		if (req == 0) {
-			/* we couldn't do anything, take it easy for a bit */
-			if (__sync_add_and_fetch(&(self->failure), 0) > 1) {
-				/* This is a compound because I can't seem to figure
-				 * out how to atomically just "set" a variable.
-				 * It's not bad when in the middle there is a ++,
-				 * all that counts is that afterwards its > 0. */
-				__sync_and_and_fetch(&(self->failure), 0);
-				__sync_add_and_fetch(&(self->failure), 1);
-			}
-		} else if (QUEUE_FREE_CRITICAL(qfree, self) && !shutdown) {
-			/* skip overloaded destination, if secondaries exist */
-			return -1;
-		}
 	}
 	if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME) {
 		/* avoid overflowing */
@@ -1084,13 +1057,26 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 	/* try to connect */
 	if (self->fd < 0) {
 		if (server_connect(self) == -1) {
+			if (self->secondariescnt > 0) {
+				int i;
+				int queued = 0;
+				for (i = 0; i < self->secondariescnt; i++) {
+					if (self != self->secondaries[i] && queue_len(self->secondaries[i]->queue) > 0) {
+						queued = 1;
+						break;
+					}
+				}
+				if (queued == 0) {
+					return 0;
+				}
+			}
 			return -1;
 		}
 	}
 
 	/* send up to batch size */
 	if (qfree == queue_size(self->queue)) {
-		if (shutdown && self->secondariescnt > 0) {
+		if (shutdown && self->secondariescnt > 0 && __sync_bool_compare_and_swap(&(self->failure), 0, 0)) {
 			int i;
 			squeue = NULL;
 			for (i = 0; i < self->secondariescnt; i++) {
@@ -1113,8 +1099,12 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 						self->ip, self->port, queue_len(squeue),
 						self->secondaries[self->secpos[i]]->ip, self->secondaries[self->secpos[i]]->port);
 			}
-		} else
+		} else {
+			if (__sync_and_and_fetch(&(self->failure), 0) > 0) {
+				__sync_sub_and_fetch(&(self->failure), 1);
+			}
 			return 0;
+		}
 	} else {
 		if (shutdown) {
 			/* be noisy during shutdown so we can track any slowing down
@@ -1154,10 +1144,6 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 				self->strm->strmclose(self->strm);
 				self->fd = -1;
 				break;
-			} else if (!__sync_bool_compare_and_swap(&(self->failure), 0, 0)) {
-				if (self->ctype != CON_UDP)
-					logerr("server %s:%u: OK\n", self->ip, self->port);
-				__sync_and_and_fetch(&(self->failure), 0);
 			}
 			__sync_add_and_fetch(&(self->metrics), 1);
 
@@ -1172,6 +1158,17 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 						 "incomplete write"));
 			self->strm->strmclose(self->strm);
 			self->fd = -1;
+		}
+		if (self->fd >= 0) {
+			if ( __sync_and_and_fetch(&(self->failure), 0) > 0) {
+				if (__sync_sub_and_fetch(&(self->failure), 1) == 0 && self->ctype != CON_UDP) {
+					logerr("server %s:%u: OK\n", self->ip, self->port);
+				}
+			}
+		} else {
+			if (__sync_and_and_fetch(&(self->failure), 0) < FAIL_WAIT_TIME) {
+				__sync_and_and_fetch(&(self->failure), 1);
+			}
 		}
 
 		/* reset metric location for requeue metrics from possible unsended buffer
@@ -1226,9 +1223,15 @@ static int server_poll(server *self, int timeout_ms)
 					   ufds[0].revents, self->ip, self->port);
 			}
 		} else {
-			__sync_fetch_and_add(&(self->failure), 1); /*TIMEOUT */
-			logerr("timeout for connection to %s:%u\n",
-					self->ip, self->port);
+			/*TIMEOUT */
+			char failure = __sync_and_and_fetch(&(self->failure), 0);
+			if (failure == 0) {
+				logerr("timeout for connection to %s:%u\n",
+						self->ip, self->port);
+			}
+			if (failure < FAIL_WAIT_TIME) {
+				__sync_and_and_fetch(&(self->failure), 1);
+			}
 		}
 		self->strm->strmclose(self->strm);
 		self->fd = -1;
