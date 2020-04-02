@@ -1565,6 +1565,11 @@ server_cmp(server *s, struct addrinfo *saddr, const char *ip, unsigned short por
 	return 1;  /* not equal */
 }
 
+void
+server_set_port(server *s, unsigned short port) {
+	s->port = port;
+}
+
 /**
  * Starts a previously created server using server_new().  Returns
  * errno if starting a thread failed, after which the caller should
