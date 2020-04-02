@@ -172,10 +172,15 @@ sockflush(z_strm *strm)
 	for (cnt = 0; cnt < SERVER_MAX_SEND; cnt++) {
 		if ((slen = write(strm->hdl.sock, p, len)) != len) {
 			if (slen >= 0) {
+				struct pollfd ufds[1];
 				p += slen;
 				len -= slen;
-			} else if (errno != EINTR)
+				ufds[0].fd = strm->hdl.sock;
+				ufds[0].events = POLLOUT;
+				poll(ufds, 1, 1000);
+			} else if (errno != EINTR) {
 				return -1;
+			}
 		} else {
 			strm->obuflen = 0;
 			return 0;
@@ -1199,14 +1204,14 @@ static ssize_t server_queueread(server *self, char shutdown, char *idle)
 		return len;
 }
 
-static int server_poll(server *self)
+static int server_poll(server *self, int timeout_ms)
 {
 	if (self->fd > 0) {
 		int ret;
 		struct pollfd ufds[1];
 		ufds[0].fd = self->fd;
 		ufds[0].events = POLLOUT;
-		ret = poll(ufds, 1, 10 * 1000); /* 10s */
+		ret = poll(ufds, 1, timeout_ms);
 		if (ret < 0) {
 			logerr("poll error: %s", strerror(errno));
 			return -1;
@@ -1250,12 +1255,13 @@ server_queuereader(void *d)
 
 	char shutdown = 0;
 	ssize_t ret;
+	int poll_timeout = 10 * 1000; /* 10s */
 
 	self->running = 1;
 	self->alive = 1;
 
 	while (!shutdown) {
-		if (server_poll(self) == -1) {
+		if (server_poll(self, poll_timeout) == -1) {
 			usleep((300 + (rand2() % 100)) * 1000);  /* 300ms - 400ms */
 			shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
 			continue;
@@ -1273,7 +1279,7 @@ server_queuereader(void *d)
 
 	started = time(NULL);
 	while (1) {
-		if ((ret = server_poll(self)) > -1) {
+		if ((ret = server_poll(self, poll_timeout)) > -1) {
 			gettimeofday(&start, NULL);
 			ret = server_queueread(self, shutdown, &idle);
 			gettimeofday(&stop, NULL);
