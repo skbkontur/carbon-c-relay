@@ -29,6 +29,7 @@
 #include <math.h>
 #include <errno.h>
 #include <libgen.h>
+#include <signal.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -71,6 +72,11 @@ char *sslCA = NULL;
 char sslCAisdir = 0;
 #endif
 
+struct _reader {
+	int sock;
+	queue *queue;
+} reader;
+
 MU_TEST_STEP(test_server_send, char*) {
 	size_t destlen = 0, len = 0, blackholed = 0;
 	char config[280];
@@ -86,6 +92,9 @@ MU_TEST_STEP(test_server_send, char*) {
 	size_t metrics = 0;
 	size_t dropped = 0;
 
+	queuefree_threshold_start = 1;
+	queuefree_threshold_end = 3;
+	
 	strcpy(relay_hostname, "relay");
 
 	snprintf(config, sizeof(config), "%s/%s.conf", testdir, param);
@@ -93,6 +102,11 @@ MU_TEST_STEP(test_server_send, char*) {
 					batchsize, 1, 600, 0, 2003);
 	if (rtr == NULL) {
 		mu_fail_step("router_readconfig failed", param);
+		return;
+	}
+	cl = router_cluster(rtr, "test");
+	if (cl == NULL) {
+		mu_fail_step("cluster test not found", param);
 		return;
 	}
 
@@ -109,17 +123,12 @@ MU_TEST_STEP(test_server_send, char*) {
 		}
 	}
 	mu_assert_step(blackholed == 0, "router_route blackholed", param);
-	cl = router_cluster(rtr, "test");
-	if (cl == NULL) {
-		mu_fail_step("cluster test not found", param);
-		return;
-	}
 
 	for (i = 0; i < cl->members.anyof->count; i++) {
-		metrics += queue_len(server_queue(cl->members.anyof->servers[i]));
+		metrics += server_get_metrics(cl->members.anyof->servers[i]) + queue_len(server_queue(cl->members.anyof->servers[i]));
 		dropped += server_get_dropped(cl->members.anyof->servers[i]);
 	}
-	mu_assert_step(metrics == send_metrics, "server_send metrics count", param);
+	mu_assert_int_eq_step(send_metrics, metrics, param);
 	mu_assert_step(dropped == 0, "server_send drop", param);
 
 	router_free(rtr);
@@ -130,7 +139,7 @@ MU_TEST_STEP(test_server_shutdown_timeout, char*) {
 	char config[280];
 	int queuesize = 100;
 	int batchsize = 10;
-	size_t send_metrics = 2 * queuesize - 4 * batchsize;
+	size_t send_metrics = queuesize - 3 * batchsize;
 	int i, j;
 	destination dests[DESTS_SIZE];
 	char *metric;
@@ -144,6 +153,8 @@ MU_TEST_STEP(test_server_shutdown_timeout, char*) {
 	int socks[32];
 
 	shutdown_timeout = 20;
+	queuefree_threshold_start = 1;
+	queuefree_threshold_end = 3;
 
 	strcpy(relay_hostname, "relay");
 
@@ -155,6 +166,11 @@ MU_TEST_STEP(test_server_shutdown_timeout, char*) {
 		return;
 	}
 
+	cl = router_cluster(rtr, "test");
+	if (cl == NULL) {
+		mu_fail_step("cluster test not found", param);
+		return;
+	}
 	cl = router_cluster(rtr, "test");
 	if (cl == NULL) {
 		mu_fail_step("cluster test not found", param);
@@ -198,10 +214,11 @@ MU_TEST_STEP(test_server_shutdown_timeout, char*) {
 	mu_assert_step(elapsed < shutdown_timeout + 20, "router_shutdown timeout", param);
 
 	for (i = 0; i < cl->members.anyof->count; i++) {
-		metrics += queue_len(server_queue(cl->members.anyof->servers[i]));
+		metrics += server_get_metrics(cl->members.anyof->servers[i]) + queue_len(server_queue(cl->members.anyof->servers[i]));
 		dropped += server_get_dropped(cl->members.anyof->servers[i]);
 	}
-	mu_assert_step(metrics == send_metrics, "server_send metrics count", param);
+	mu_assert_int_eq_step(0, dropped, param);
+	mu_assert_int_eq_step(send_metrics, metrics, param);
 
 	router_free(rtr);
 }
@@ -219,6 +236,7 @@ MU_TEST_SUITE(server_send_suite) {
 int main(int argc, char *argv[]) {
 	char *dir = dirname(argv[0]);
 	snprintf(testdir, sizeof(testdir), "%s/test", dir);
+	signal(SIGPIPE, SIG_IGN);
 	MU_RUN_SUITE(server_send_suite);
 	MU_REPORT();
 	return MU_EXIT_CODE;
