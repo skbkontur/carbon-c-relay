@@ -1019,6 +1019,7 @@ static ssize_t server_queueread(server *self, int shutdown, char *idle)
 	size_t qfree;
 	int i;
 	char noqueue = 0;
+	struct timeval start, stop;
 
 	if (__sync_add_and_fetch(&(self->failure), 0) > FAIL_WAIT_TIME) {
 		__sync_sub_and_fetch(&(self->failure), 1);
@@ -1074,7 +1075,10 @@ static ssize_t server_queueread(server *self, int shutdown, char *idle)
 	 * shut down, however, try to get everything out of the door
 	 * (until we fail, see top of this loop) */
 	/* try to connect */
+	gettimeofday(&start, NULL);
 	if (self->fd < 0 && server_connect(self) == -1) {
+		gettimeofday(&stop, NULL);
+		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
 		return -1;
 	}
 
@@ -1112,6 +1116,8 @@ static ssize_t server_queueread(server *self, int shutdown, char *idle)
 			len += ret;
 		}
 	}
+	gettimeofday(&stop, NULL);
+	__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
 
 	*idle = 0;
 
@@ -1179,7 +1185,6 @@ server_queuereader(void *d)
 {
 	server *self = (server *)d;
 	char idle = 0;
-	struct timeval start, stop;
 	time_t started, ended;
 
 	int shutdown = 0;
@@ -1196,11 +1201,8 @@ server_queuereader(void *d)
 			continue;
 		}
 
-		gettimeofday(&start, NULL);
 		shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
 		ret = server_queueread(self, shutdown, &idle);
-		gettimeofday(&stop, NULL);
-		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
 		if (ret < self->bsize) {
 			usleep((100 + (rand2() % 100)) * 1000);  /* 100ms - 200ms */
 		}
@@ -1209,10 +1211,7 @@ server_queuereader(void *d)
 	started = time(NULL);
 	while (1) {
 		if ((ret = server_poll(self, poll_timeout)) > -1) {
-			gettimeofday(&start, NULL);
 			ret = server_queueread(self, shutdown, &idle);
-			gettimeofday(&stop, NULL);
-			__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
 		}
 		if (ret > 0) {
 			__sync_bool_compare_and_swap(&(self->alive), 0, 1);
