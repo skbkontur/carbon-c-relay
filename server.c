@@ -199,6 +199,16 @@ sockerror(z_strm *strm, int rval)
 	return strerror(errno);
 }
 
+static int
+socketsetup(server *s) {
+	s->strm->strmwrite = &sockwrite;
+	s->strm->strmflush = &sockflush;
+	s->strm->strmclose = &sockclose;
+	s->strm->strmerror = &sockerror;
+
+	return 0;
+}
+
 #ifdef HAVE_GZIP
 /* gzip wrapped socket */
 static inline int gzipflush(z_strm *strm);
@@ -291,11 +301,27 @@ gziperror(z_strm *strm, int rval)
 {
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
+
+static int
+gzipsetup(server *s) {
+	z_strm *gzstrm = malloc(sizeof(z_strm));
+	if (gzstrm == NULL) {
+		return -1;
+	}
+	gzstrm->strmwrite = &gzipwrite;
+	gzstrm->strmflush = &gzipflush;
+	gzstrm->strmclose = &gzipclose;
+	gzstrm->strmerror = &gziperror;
+	gzstrm->nextstrm = s->strm;
+	s->strm = gzstrm;
+	gzstrm->obuflen = 0;
+
+	return 0;
+}
 #endif
 
 #ifdef HAVE_LZ4
 /* lz4 wrapped socket */
-
 static inline int lzflush(z_strm *strm);
 
 static inline ssize_t
@@ -380,6 +406,23 @@ lzerror(z_strm *strm, int rval)
 {
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
+
+static int
+lzsetup(server *s) {
+	z_strm *lzstrm = malloc(sizeof(z_strm));
+	if (lzstrm == NULL) {
+		return -1;
+	}
+	lzstrm->strmwrite = &lzwrite;
+	lzstrm->strmflush = &lzflush;
+	lzstrm->strmclose = &lzclose;
+	lzstrm->strmerror = &lzerror;
+	lzstrm->nextstrm = s->strm;
+	lzstrm->obuflen = 0;
+	s->strm = lzstrm;
+
+	return 0;
+}
 #endif
 
 #ifdef HAVE_SNAPPY
@@ -443,11 +486,29 @@ snappyerror(z_strm *strm, int rval)
 {
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
+
+static int
+snappysetup(server *s) {
+	z_strm *snpstrm = malloc(sizeof(z_strm));
+	if (snpstrm == NULL) {
+		return -1;
+	}
+	snpstrm->strmwrite = &snappywrite;
+	snpstrm->strmflush = &snappyflush;
+	snpstrm->strmclose = &snappyclose;
+	snpstrm->strmerror = &snappyerror;
+	snpstrm->nextstrm = s->strm;
+	snpstrm->obuflen = 0;
+	s->strm = snpstrm;
+
+	return 0;
+}
 #endif
 
 #ifdef HAVE_SSL
 /* (Open|Libre)SSL wrapped socket */
 static inline int sslflush(z_strm *strm);
+
 static inline ssize_t
 sslwrite(z_strm *strm, const void *buf, size_t sze)
 {
@@ -555,6 +616,33 @@ sslerror(z_strm *strm, int rval)
 			break;
 	}
 	return _sslerror_buf;
+}
+
+static int
+sslsetup(server *s) {
+	const SSL_METHOD *m = SSLv23_client_method();
+	s->strm->ctx = SSL_CTX_new(m);
+
+	if (sslCA != NULL) {
+		if (s->strm->ctx == NULL ||
+			SSL_CTX_load_verify_locations(s->strm->ctx,
+											sslCAisdir ? NULL : sslCA,
+											sslCAisdir ? sslCA : NULL) == 0)
+		{
+			char *err = ERR_error_string(ERR_get_error(), NULL);
+			logerr("failed to load SSL verify locations from %s for "
+					"%s:%d: %s\n", sslCA, s->ip, s->port, err);
+			return -1;
+		}
+	}
+	SSL_CTX_set_verify(s->strm->ctx, SSL_VERIFY_PEER, NULL);
+
+	s->strm->strmwrite = &sslwrite;
+	s->strm->strmflush = &sslflush;
+	s->strm->strmclose = &sslclose;
+	s->strm->strmerror = &sslerror;
+
+	return 0;
 }
 #endif
 
@@ -1285,6 +1373,8 @@ server_queuereader(void *d)
 	return NULL;
 }
 
+static void server_cleanup(server *s);
+
 /**
  * Allocate a new (outbound) server.  Effectively this means a thread
  * that reads from the queue and sends this as good as it can to the ip
@@ -1323,6 +1413,11 @@ server_new(
 		free(ret);
 		return NULL;
 	}
+	ret->queue = NULL;
+	ret->saddr = NULL;
+	ret->hint = NULL;
+	ret->strm = NULL;
+	ret->secpos = NULL;
 	ret->port = port;
 	ret->instance = NULL;
 	ret->bsize = bsize;
@@ -1331,56 +1426,34 @@ server_new(
 	ret->sockbufsize = sockbufsize;
 	ret->maxstalls = maxstalls;
 	if ((ret->batch = malloc(sizeof(char *) * (bsize + 1))) == NULL) {
-		free((char *)ret->ip);
-		free(ret);
+		server_cleanup(ret);
 		return NULL;
 	}
 	ret->fd = -1;
 	if ((ret->strm = malloc(sizeof(z_strm))) == NULL) {
-		free((char *)ret->ip);
-		free(ret->batch);
-		free(ret);
+		server_cleanup(ret);
 		return NULL;
 	}
 	ret->strm->obuflen = 0;
 	ret->strm->nextstrm = NULL;
+	ret->queue = queue_new(qsize);
+	if (ret->queue == NULL) {
+		server_cleanup(ret);
+		return NULL;
+	}
 
 	/* setup normal or SSL-wrapped socket first */
 #ifdef HAVE_SSL
 	if ((transport & ~0xFFFF) == W_SSL) {
 		/* create an auto-negotiate context */
-		const SSL_METHOD *m = SSLv23_client_method();
-		ret->strm->ctx = SSL_CTX_new(m);
-	
-		if (sslCA != NULL) {
-			if (ret->strm->ctx == NULL ||
-				SSL_CTX_load_verify_locations(ret->strm->ctx,
-											   sslCAisdir ? NULL : sslCA,
-											   sslCAisdir ? sslCA : NULL) == 0)
-			{
-				char *err = ERR_error_string(ERR_get_error(), NULL);
-				logerr("failed to load SSL verify locations from %s for "
-						"%s:%d: %s\n", sslCA, ret->ip, ret->port, err);
-				free((char *)ret->ip);
-				free(ret->batch);
-				free(ret->strm);
-				free(ret);
-				return NULL;
-			}
+		if (sslsetup(ret) == -1) {
+			server_cleanup(ret);
+			return NULL;
 		}
-		SSL_CTX_set_verify(ret->strm->ctx, SSL_VERIFY_PEER, NULL);
-
-		ret->strm->strmwrite = &sslwrite;
-		ret->strm->strmflush = &sslflush;
-		ret->strm->strmclose = &sslclose;
-		ret->strm->strmerror = &sslerror;
 	} else
 #endif
 	{
-		ret->strm->strmwrite = &sockwrite;
-		ret->strm->strmflush = &sockflush;
-		ret->strm->strmclose = &sockclose;
-		ret->strm->strmerror = &sockerror;
+		(void)socketsetup(ret);
 	}
 	
 	/* now see if we have a compressor defined */
@@ -1389,75 +1462,34 @@ server_new(
 	}
 #ifdef HAVE_GZIP
 	else if ((transport & 0xFFFF) == W_GZIP) {
-		z_strm *gzstrm = malloc(sizeof(z_strm));
-		if (gzstrm == NULL) {
-			free((char *)ret->ip);
-			free(ret->batch);
-			free(ret->strm);
-			free(ret);
+		if (gzipsetup(ret) == -1) {
+			server_cleanup(ret);
 			return NULL;
 		}
-		gzstrm->strmwrite = &gzipwrite;
-		gzstrm->strmflush = &gzipflush;
-		gzstrm->strmclose = &gzipclose;
-		gzstrm->strmerror = &gziperror;
-		gzstrm->nextstrm = ret->strm;
-		gzstrm->obuflen = 0;
-		ret->strm = gzstrm;
 	}
 #endif
 #ifdef HAVE_LZ4
 	else if ((transport & 0xFFFF) == W_LZ4) {
-		z_strm *lzstrm = malloc(sizeof(z_strm));
-		if (lzstrm == NULL) {
-			free((char *)ret->ip);
-			free(ret->batch);
-			free(ret->strm);
-			free(ret);
+		if (lzsetup(ret) == -1) {
+			server_cleanup(ret);
 			return NULL;
 		}
-		lzstrm->strmwrite = &lzwrite;
-		lzstrm->strmflush = &lzflush;
-		lzstrm->strmclose = &lzclose;
-		lzstrm->strmerror = &lzerror;
-		lzstrm->nextstrm = ret->strm;
-		lzstrm->obuflen = 0;
-		ret->strm = lzstrm;
 	}
 #endif
 #ifdef HAVE_SNAPPY
 	else if ((transport & 0xFFFF) == W_SNAPPY) {
-		z_strm *snpstrm = malloc(sizeof(z_strm));
-		if (snpstrm == NULL) {
-			free((char *)ret->ip);
-			free(ret->batch);
-			free(ret->strm);
-			free(ret);
+		if (snappysetup(ret) == -1) {
+			server_cleanup(ret);
 			return NULL;
 		}
-		snpstrm->strmwrite = &snappywrite;
-		snpstrm->strmflush = &snappyflush;
-		snpstrm->strmclose = &snappyclose;
-		snpstrm->strmerror = &snappyerror;
-		snpstrm->nextstrm = ret->strm;
-		snpstrm->obuflen = 0;
-		ret->strm = snpstrm;
 	}
 #endif
 
 	ret->saddr = saddr;
 	ret->reresolve = 0;
-	ret->hint = NULL;
 	if (hint != NULL) {
 		ret->reresolve = 1;
 		ret->hint = hint;
-	}
-	ret->queue = queue_new(qsize);
-	if (ret->queue == NULL) {
-		free(ret->batch);
-		free((char *)ret->ip);
-		free(ret);
-		return NULL;
 	}
 
 	ret->failover = 0;
@@ -1657,6 +1689,29 @@ void server_shutdown_wait(server *s)
 }
 
 /**
+ * Frees this server and associated resources without joining thread
+ */
+static void
+server_cleanup(server *s) {
+	if (s->queue != NULL) {
+		queue_destroy(s->queue);
+	}
+	free(s->batch);
+	free(s->instance);
+	if (s->saddr != NULL) {
+		freeaddrinfo(s->saddr);
+	}
+	free(s->hint);
+	if (s->strm != NULL) {
+		free(s->strm->nextstrm);
+		free(s->strm);
+	}
+	s->ip = NULL;
+	free(s->secpos);
+	free((char *)s->ip);
+	free(s);
+}
+/**
  * Frees this server and associated resources.  This includes joining
  * the server thread.
  */
@@ -1676,21 +1731,7 @@ server_free(server *s) {
 					qlen, s->ip, s->port);
 	}
 
-	queue_destroy(s->queue);
-	free(s->batch);
-	if (s->instance)
-		free(s->instance);
-	if (s->saddr != NULL)
-		freeaddrinfo(s->saddr);
-	if (s->hint)
-		free(s->hint);
-	free((char *)s->ip);
-	if (s->strm->nextstrm != NULL)
-		free(s->strm->nextstrm);
-	free(s->strm);
-	s->ip = NULL;
-	free(s->secpos);
-	free(s);
+	server_cleanup(s);
 }
 
 /**
