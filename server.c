@@ -702,6 +702,13 @@ size_t server_metrics_in_buffer(server *s) {
 	return count;
 }
 
+int
+server_disconnect(server *self) {
+	int ret = self->strm->strmclose(self->strm);
+	self->fd = -1;
+	return ret;
+}
+
 char server_connect(server *self)
 {
 	struct timeval timeout;
@@ -1060,8 +1067,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		if (self->ctype == CON_TCP && self->fd >= 0 &&
 				*idle++ > DISCONNECT_WAIT_TIME)
 		{
-			self->strm->strmclose(self->strm);
-			self->fd = -1;
+			server_disconnect(self);
 		}
 		if (*idle == 1)
 			/* ensure blocks are pushed out as soon as we're idling,
@@ -1262,8 +1268,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 							(slen < 0 ?
 							 self->strm->strmerror(self->strm, slen) :
 							 "incomplete write"));
-				self->strm->strmclose(self->strm);
-				self->fd = -1;
+				server_disconnect(self);
 				break;
 			} else if (!__sync_bool_compare_and_swap(&(self->failure), 0, 0)) {
 				if (self->ctype != CON_UDP)
@@ -1281,8 +1286,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 						(slen < 0 ?
 						 self->strm->strmerror(self->strm, slen) :
 						 "incomplete write"));
-			self->strm->strmclose(self->strm);
-			self->fd = -1;
+			server_disconnect(self);
 		}
 
 		/* reset metric location for requeue metrics from possible unsended buffer
@@ -1397,14 +1401,14 @@ server_queuereader(void *d)
 	logout("shut down %s:%d\n", self->ip, self->port);
 	if (self->fd >= 0) {
 		self->strm->strmflush(self->strm);
-		self->strm->strmclose(self->strm);
+		server_disconnect(self);
 	}
 
 	__sync_bool_compare_and_swap(&(self->running), 1, 0);
 	return NULL;
 }
 
-static void server_cleanup(server *s);
+void server_cleanup(server *s);
 
 /**
  * Allocate a new (outbound) server.  Effectively this means a thread
@@ -1722,7 +1726,7 @@ void server_shutdown_wait(server *s)
 /**
  * Frees this server and associated resources without joining thread
  */
-static void
+void
 server_cleanup(server *s) {
 	if (s->queue != NULL) {
 		queue_destroy(s->queue);
