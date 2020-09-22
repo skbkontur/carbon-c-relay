@@ -302,10 +302,12 @@ gziperror(z_strm *strm, int rval)
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
 
+/* setup on server alloc */
 static int
 gzipsetup(server *s) {
 	z_strm *gzstrm = malloc(sizeof(z_strm));
 	if (gzstrm == NULL) {
+		logerr("failed to alloc gzip stream: out of memory\n");
 		return -1;
 	}
 	gzstrm->strmwrite = &gzipwrite;
@@ -313,8 +315,36 @@ gzipsetup(server *s) {
 	gzstrm->strmclose = &gzipclose;
 	gzstrm->strmerror = &gziperror;
 	gzstrm->nextstrm = s->strm;
-	s->strm = gzstrm;
 	gzstrm->obuflen = 0;
+	gzstrm->hdl.gz = NULL;
+	s->strm = gzstrm;
+
+	return 0;
+}
+
+/* allocation on connect */
+int
+gzipalloc(z_strm *strm) {
+	strm->hdl.gz = malloc(sizeof(z_stream));
+	if (strm->hdl.gz == NULL) {
+		logerr("failed to alloc gzip stream: out of memory\n");
+		return -1;
+	}
+	strm->hdl.gz->zalloc = Z_NULL;
+	strm->hdl.gz->zfree = Z_NULL;
+	strm->hdl.gz->opaque = Z_NULL;
+	strm->hdl.gz->next_in = Z_NULL;
+	if (deflateInit2(strm->hdl.gz,
+			Z_DEFAULT_COMPRESSION,
+			Z_DEFLATED,
+			15 + 16,
+			8,
+			Z_DEFAULT_STRATEGY) != Z_OK)
+	{
+		free(strm->hdl.gz);
+		logerr("failed to alloc gzip stream: out of memory\n");
+		return -1;
+	}
 
 	return 0;
 }
@@ -407,10 +437,12 @@ lzerror(z_strm *strm, int rval)
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
 
+/* setup on server alloc */
 static int
 lzsetup(server *s) {
 	z_strm *lzstrm = malloc(sizeof(z_strm));
 	if (lzstrm == NULL) {
+		logerr("failed to alloc lz4 stream: out of memory\n");
 		return -1;
 	}
 	lzstrm->strmwrite = &lzwrite;
@@ -421,6 +453,18 @@ lzsetup(server *s) {
 	lzstrm->obuflen = 0;
 	s->strm = lzstrm;
 
+	return 0;
+}
+
+/* alloc on connect */
+int
+lzalloc(z_strm *strm) {
+	/* get the maximum size that should ever be required and allocate for it */
+	strm->hdl.z.cbuflen = LZ4F_compressFrameBound(sizeof(strm->obuf), NULL);
+	if ((strm->hdl.z.cbuf = malloc(strm->hdl.z.cbuflen)) == NULL) {
+		logerr("Failed to allocate %lu bytes for compressed LZ4 data\n", strm->hdl.z.cbuflen);
+		return -1;
+	}
 	return 0;
 }
 #endif
@@ -491,6 +535,7 @@ static int
 snappysetup(server *s) {
 	z_strm *snpstrm = malloc(sizeof(z_strm));
 	if (snpstrm == NULL) {
+		logerr("failed to alloc snappy stream: out of memory\n");
 		return -1;
 	}
 	snpstrm->strmwrite = &snappywrite;
@@ -906,16 +951,8 @@ char server_connect(server *self)
 			self->strm->hdl.gz->opaque = Z_NULL;
 			self->strm->hdl.gz->next_in = Z_NULL;
 		}
-		if (self->strm->hdl.gz == NULL ||
-				deflateInit2(self->strm->hdl.gz,
-					Z_DEFAULT_COMPRESSION,
-					Z_DEFLATED,
-					15 + 16,
-					8,
-					Z_DEFAULT_STRATEGY) != Z_OK)
-		{
+		if (gzipalloc(self->strm) == -1) {
 			__sync_add_and_fetch(&(self->failure), 1);
-			logerr("failed to open gzip stream: out of memory\n");
 			close(self->fd);
 			self->fd = -1;
 			return -1;
@@ -924,14 +961,8 @@ char server_connect(server *self)
 #endif
 #ifdef HAVE_LZ4
 	if ((self->transport & 0xFFFF) == W_LZ4) {
-		self->strm->obuflen = 0;
-
-		/* get the maximum size that should ever be required and allocate for it */
-
-		self->strm->hdl.z.cbuflen = LZ4F_compressFrameBound(sizeof(self->strm->obuf), NULL);
-		if ((self->strm->hdl.z.cbuf = malloc(self->strm->hdl.z.cbuflen)) == NULL) {
+		if (lzalloc(self->strm) == -1) {
 			__sync_add_and_fetch(&(self->failure), 1);
-			logerr("Failed to allocate %lu bytes for compressed LZ4 data\n", self->strm->hdl.z.cbuflen);
 			close(self->fd);
 			self->fd = -1;
 			return -1;
