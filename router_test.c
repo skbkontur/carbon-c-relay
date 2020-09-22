@@ -51,9 +51,10 @@ relaylog(enum logdst dest, const char *fmt, ...)
 router *router_new(void);
 char *router_validate_address(router *rtr, char **retip, unsigned short *retport, void **retsaddr, void **rethint, char *ip, con_proto proto);
 
-#include "minunit.h"
+#define CTEST_MAIN
+#define CTEST_SEGFAULT
 
-static router *r;
+#include "ctest.h"
 
 char relay_hostname[256];
 #ifdef HAVE_SSL
@@ -61,72 +62,75 @@ char *sslCA = NULL;
 char sslCAisdir = 0;
 #endif
 
-MU_TEST(router_validate_address_hostname) {
+CTEST_DATA(router_test) {
+    router *r;
+};
+
+CTEST_SETUP(router_test) {
+    data->r = router_new();
+}
+
+CTEST_TEARDOWN(router_test) {
+    router_free(data->r);
+}
+
+CTEST2(router_test, router_validate_address_hostname) {
 	char *retip;
 	unsigned short retport;
 	void *retsaddr, *rethint;
 	char ip[256];
 
 	strcpy(ip, "host");
-	mu_assert_string_eq(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), NULL);
-	mu_check(retport == 2003);
-	mu_assert_string_eq(retip, "host");
+	ASSERT_NULL(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP));
+	ASSERT_EQUAL(retport, 2003);
+	ASSERT_STR(retip, "host");
 
 	strcpy(ip, "[host:1]");
-	mu_assert_string_eq(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), NULL);
-	mu_check(retport == 2003);
-	mu_assert_string_eq(retip, "host:1");
+	ASSERT_NULL(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP));
+	ASSERT_EQUAL(retport, 2003);
+	ASSERT_STR(retip, "host:1");
 }
 
-MU_TEST(router_validate_address_port) {
+CTEST2(router_test, router_validate_address_port) {
 	char *retip;
 	unsigned short retport;
 	void *retsaddr, *rethint;
 	char ip[256];
 
 	strcpy(ip, ":2005");
-	mu_assert_string_eq(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), NULL);
-	mu_check(retport == 2005);
-	mu_check(retip == NULL);
+	ASSERT_NULL(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP));
+	ASSERT_EQUAL(retport, 2005);
+	ASSERT_NULL(retip);
 
 	strcpy(ip, ":2005a");
-	mu_check(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP) != NULL);
+	ASSERT_STR(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), "invalid port number '2005a'");
 }
 
-MU_TEST(router_validate_address_hostname_port) {
+
+CTEST2(router_test, router_validate_address_hostname_port) {
 	char *retip;
 	unsigned short retport;
 	void *retsaddr, *rethint;
 	char ip[256];
 
-	strcpy(ip, "host:2005");
-	mu_assert_string_eq(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), NULL);
-	mu_check(retport == 2005);
-	mu_assert_string_eq(retip, "host");
+	strcpy(ip, "host:2004");
+	ASSERT_NULL(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP));
+	ASSERT_EQUAL(retport, 2004);
+	ASSERT_STR(retip, "host");
 
-	strcpy(ip, "host:2005a");
-	mu_check(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP) != NULL);
+ 	strcpy(ip, "host:2005a");
+ 	ASSERT_STR(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), "invalid port number '2005a'");
 
-	strcpy(ip, "[host:1]:2005");
-	mu_assert_string_eq(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), NULL);
-	mu_check(retport == 2005);
-	mu_assert_string_eq(retip, "host:1");
+ 	strcpy(ip, "[host:1]:2002");
+ 	ASSERT_NULL(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP));
+ 	ASSERT_EQUAL(retport, 2002);
+ 	ASSERT_STR(retip, "host:1");
 
-	strcpy(ip, "[host:1]:2005a");
-	mu_check(router_validate_address(r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP) != NULL);
+ 	strcpy(ip, "[host:1]:2006c");
+ 	ASSERT_STR(router_validate_address(data->r, &retip, &retport, &retsaddr, &rethint, ip, CON_TCP), "invalid port number '2006c'");
 }
 
-MU_TEST_SUITE(test_suite) {
-	MU_RUN_TEST(router_validate_address_hostname);
-	MU_RUN_TEST(router_validate_address_port);
-	MU_RUN_TEST(router_validate_address_hostname_port);
-}
-
-int main(int argc, char *argv[]) {
-	if ((r = router_new()) == NULL) {
-		return 1;
-	}
-	MU_RUN_SUITE(test_suite);
-	MU_REPORT();
-	return MU_EXIT_CODE;
+int main(int argc, const char *argv[])
+{
+    return ctest_main(argc, argv);
 }

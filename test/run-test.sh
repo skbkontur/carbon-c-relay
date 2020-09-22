@@ -557,7 +557,7 @@ ufail=0
 echo "Unit tests"
 for test in ../test_* ; do
 	[ -x "${test}" ] || continue
-	echo -n "# $( basename ${test} )"
+	echo "# $( basename ${test} )"
 	${test} || ufail=1
 done
 [ "${ufail}" == "1" ] && exit 1

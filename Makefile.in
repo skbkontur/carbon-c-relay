@@ -106,8 +106,9 @@ build_triplet = @build@
 host_triplet = @host@
 bin_PROGRAMS = relay$(EXEEXT)
 check_PROGRAMS = sendmetric$(EXEEXT)
-noinst_PROGRAMS = test_router$(EXEEXT)
-@SSL_ENABLED_TRUE@am__append_1 = dual-ssl large-ssl dual-large-ssl
+noinst_PROGRAMS = test_router$(EXEEXT) $(am__EXEEXT_1)
+@BENCH_ENABLED_TRUE@am__append_1 = bench_queue
+@SSL_ENABLED_TRUE@am__append_2 = dual-ssl large-ssl dual-large-ssl
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/libtool.m4 \
@@ -126,6 +127,7 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libdir)" \
 	"$(DESTDIR)$(man1dir)"
+@BENCH_ENABLED_TRUE@am__EXEEXT_1 = bench_queue$(EXEEXT)
 PROGRAMS = $(bin_PROGRAMS) $(noinst_PROGRAMS)
 am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
 am__vpath_adj = case $$p in \
@@ -162,6 +164,19 @@ AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
 am__v_lt_1 = 
+am__bench_queue_SOURCES_DIST = queue_bench.c queue.c benchmark.c \
+	benchmark_threads.c pthread_barrier.c
+@BENCH_ENABLED_TRUE@am_bench_queue_OBJECTS = queue_bench.$(OBJEXT) \
+@BENCH_ENABLED_TRUE@	queue.$(OBJEXT) benchmark.$(OBJEXT) \
+@BENCH_ENABLED_TRUE@	benchmark_threads.$(OBJEXT) \
+@BENCH_ENABLED_TRUE@	pthread_barrier.$(OBJEXT)
+bench_queue_OBJECTS = $(am_bench_queue_OBJECTS)
+am__DEPENDENCIES_1 =
+am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1)
+@BENCH_ENABLED_TRUE@bench_queue_DEPENDENCIES = $(am__DEPENDENCIES_2)
 am__objects_1 = md5.$(OBJEXT) consistent-hash.$(OBJEXT) \
 	receptor.$(OBJEXT) dispatcher.$(OBJEXT) conffile.tab.$(OBJEXT) \
 	conffile.yy.$(OBJEXT) allocator.$(OBJEXT) router.$(OBJEXT) \
@@ -169,11 +184,6 @@ am__objects_1 = md5.$(OBJEXT) consistent-hash.$(OBJEXT) \
 	aggregator.$(OBJEXT)
 am_relay_OBJECTS = relay.$(OBJEXT) $(am__objects_1)
 relay_OBJECTS = $(am_relay_OBJECTS)
-am__DEPENDENCIES_1 =
-am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1)
 relay_DEPENDENCIES = $(am__DEPENDENCIES_2)
 am_sendmetric_OBJECTS = sendmetric.$(OBJEXT)
 sendmetric_OBJECTS = $(am_sendmetric_OBJECTS)
@@ -198,11 +208,13 @@ DEFAULT_INCLUDES = -I.@am__isrc@
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/aggregator.Po \
-	./$(DEPDIR)/allocator.Po ./$(DEPDIR)/collector.Po \
+	./$(DEPDIR)/allocator.Po ./$(DEPDIR)/benchmark.Po \
+	./$(DEPDIR)/benchmark_threads.Po ./$(DEPDIR)/collector.Po \
 	./$(DEPDIR)/conffile.tab.Po ./$(DEPDIR)/conffile.yy.Po \
 	./$(DEPDIR)/consistent-hash.Po ./$(DEPDIR)/dispatcher.Po \
 	./$(DEPDIR)/faketime.Plo ./$(DEPDIR)/md5.Po \
-	./$(DEPDIR)/queue.Po ./$(DEPDIR)/receptor.Po \
+	./$(DEPDIR)/pthread_barrier.Po ./$(DEPDIR)/queue.Po \
+	./$(DEPDIR)/queue_bench.Po ./$(DEPDIR)/receptor.Po \
 	./$(DEPDIR)/relay.Po ./$(DEPDIR)/router.Po \
 	./$(DEPDIR)/router_test.Po ./$(DEPDIR)/sendmetric.Po \
 	./$(DEPDIR)/server.Po
@@ -225,7 +237,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-DIST_SOURCES = $(libfaketime_la_SOURCES) $(relay_SOURCES) \
+DIST_SOURCES = $(libfaketime_la_SOURCES) \
+	$(am__bench_queue_SOURCES_DIST) $(relay_SOURCES) \
 	$(sendmetric_SOURCES) $(test_router_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
@@ -465,13 +478,15 @@ EXTRA_DIST = \
 
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
+@BENCH_ENABLED_TRUE@bench_queue_SOURCES = queue_bench.c queue.c benchmark.c benchmark_threads.c pthread_barrier.c
+@BENCH_ENABLED_TRUE@bench_queue_LDADD = $(RELAY_LIBS)
 CRTESTS = issue10 issue27 issue117 issue156 issue157 issue163 issue165 \
 	issue180 issue184 issue202 issue213 issue218 issue228 issue235 \
 	issue236 issue246 issue252 issue253 issue263 issue267 issue288 \
 	issue293 issue310 issue357 issue369 server-type reload basic \
 	metriclimits buftest large dual-udp dual-tcp dual-gzip \
 	large-gzip dual-large-gzip dual-lz4 large-lz4 dual-large-lz4 \
-	$(NULL) $(am__append_1)
+	$(NULL) $(am__append_2)
 all: config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-am
 
@@ -631,6 +646,10 @@ clean-libLTLIBRARIES:
 libfaketime.la: $(libfaketime_la_OBJECTS) $(libfaketime_la_DEPENDENCIES) $(EXTRA_libfaketime_la_DEPENDENCIES) 
 	$(AM_V_CCLD)$(LINK) -rpath $(libdir) $(libfaketime_la_OBJECTS) $(libfaketime_la_LIBADD) $(LIBS)
 
+bench_queue$(EXEEXT): $(bench_queue_OBJECTS) $(bench_queue_DEPENDENCIES) $(EXTRA_bench_queue_DEPENDENCIES) 
+	@rm -f bench_queue$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(bench_queue_OBJECTS) $(bench_queue_LDADD) $(LIBS)
+
 relay$(EXEEXT): $(relay_OBJECTS) $(relay_DEPENDENCIES) $(EXTRA_relay_DEPENDENCIES) 
 	@rm -f relay$(EXEEXT)
 	$(AM_V_GEN)$(relay_LINK) $(relay_OBJECTS) $(relay_LDADD) $(LIBS)
@@ -651,6 +670,8 @@ distclean-compile:
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/aggregator.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/allocator.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/benchmark.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/benchmark_threads.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/collector.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/conffile.tab.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/conffile.yy.Po@am__quote@ # am--include-marker
@@ -658,7 +679,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/dispatcher.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/faketime.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/md5.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/pthread_barrier.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/queue.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/queue_bench.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/receptor.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/relay.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/router.Po@am__quote@ # am--include-marker
@@ -1022,6 +1045,8 @@ distclean: distclean-am
 	-rm -f $(am__CONFIG_DISTCLEAN_FILES)
 		-rm -f ./$(DEPDIR)/aggregator.Po
 	-rm -f ./$(DEPDIR)/allocator.Po
+	-rm -f ./$(DEPDIR)/benchmark.Po
+	-rm -f ./$(DEPDIR)/benchmark_threads.Po
 	-rm -f ./$(DEPDIR)/collector.Po
 	-rm -f ./$(DEPDIR)/conffile.tab.Po
 	-rm -f ./$(DEPDIR)/conffile.yy.Po
@@ -1029,7 +1054,9 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/dispatcher.Po
 	-rm -f ./$(DEPDIR)/faketime.Plo
 	-rm -f ./$(DEPDIR)/md5.Po
+	-rm -f ./$(DEPDIR)/pthread_barrier.Po
 	-rm -f ./$(DEPDIR)/queue.Po
+	-rm -f ./$(DEPDIR)/queue_bench.Po
 	-rm -f ./$(DEPDIR)/receptor.Po
 	-rm -f ./$(DEPDIR)/relay.Po
 	-rm -f ./$(DEPDIR)/router.Po
@@ -1086,6 +1113,8 @@ maintainer-clean: maintainer-clean-am
 	-rm -rf $(top_srcdir)/autom4te.cache
 		-rm -f ./$(DEPDIR)/aggregator.Po
 	-rm -f ./$(DEPDIR)/allocator.Po
+	-rm -f ./$(DEPDIR)/benchmark.Po
+	-rm -f ./$(DEPDIR)/benchmark_threads.Po
 	-rm -f ./$(DEPDIR)/collector.Po
 	-rm -f ./$(DEPDIR)/conffile.tab.Po
 	-rm -f ./$(DEPDIR)/conffile.yy.Po
@@ -1093,7 +1122,9 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/dispatcher.Po
 	-rm -f ./$(DEPDIR)/faketime.Plo
 	-rm -f ./$(DEPDIR)/md5.Po
+	-rm -f ./$(DEPDIR)/pthread_barrier.Po
 	-rm -f ./$(DEPDIR)/queue.Po
+	-rm -f ./$(DEPDIR)/queue_bench.Po
 	-rm -f ./$(DEPDIR)/receptor.Po
 	-rm -f ./$(DEPDIR)/relay.Po
 	-rm -f ./$(DEPDIR)/router.Po

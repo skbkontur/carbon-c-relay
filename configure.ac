@@ -246,5 +246,9 @@ AS_IF([test "x${LIBONIGURUMA}${LIBPCRE2}" = "x" && test "x$with_pcre" != xno],
 					]
 	)])
 
+AC_ARG_WITH([bench], [build benchmarks],
+			[], [with_bench=check])
+AM_CONDITIONAL([BENCH_ENABLED], [test "x$with_bench" == xcheck])
+
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
