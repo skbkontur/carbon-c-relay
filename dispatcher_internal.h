@@ -1,0 +1,91 @@
+/*
+ * Copyright 2013-2018 Fabian Groffen
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+#ifndef DISPATCHER_INTERNAL_H
+#define DISPATCHER_INTERNAL_H 1
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <stddef.h>
+
+#ifdef HAVE_GZIP
+#include <zlib.h>
+#endif
+#ifdef HAVE_LZ4
+#include <lz4.h>
+#include <lz4frame.h>
+#endif
+#ifdef HAVE_SNAPPY
+#include <snappy-c.h>
+#endif
+#ifdef HAVE_SSL
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#endif
+
+#include "dispatcher.h"
+
+typedef struct _z_strm {
+	ssize_t (*strmread)(struct _z_strm *, void *, size_t);  /* read func */
+	/* read from buffer only func, on error set errno to ENOMEM, EMSGSIZE or EBADMSG */
+	ssize_t (*strmreadbuf)(struct _z_strm *, void *, size_t, int, int);
+	int (*strmclose)(struct _z_strm *);
+	union {
+#ifdef HAVE_GZIP
+		struct gz {
+			z_stream z;
+			int inflatemode;
+		} gz;
+#endif
+#ifdef HAVE_LZ4
+		struct lz4 {
+			LZ4F_decompressionContext_t lz;
+			size_t iloc; /* location for unprocessed input */
+		} lz4;
+#endif
+#ifdef HAVE_SSL
+		SSL *ssl;
+#endif
+		int sock;
+		/* udp variant (in order to receive info about sender) */
+		struct udp_strm {
+			int sock;
+			struct sockaddr_in6 saddr;
+			char *srcaddr;
+			size_t srcaddrlen;
+		} udp;
+	} hdl;
+#if defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
+	char *ibuf;
+	size_t ipos;
+	size_t isize;
+#endif
+	struct _z_strm *nextstrm;
+} z_strm;
+
+z_strm *
+connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
+			#ifdef HAVE_SSL
+			, SSL_CTX *ctx
+			#else
+			, void *empthy
+			#endif
+);
+
+#endif
