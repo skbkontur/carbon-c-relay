@@ -142,9 +142,11 @@ static inline ssize_t
 sockwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ)
-		if (sockflush(strm) != 0)
-			return -1;
+	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+		/* need to flush */
+		errno = ENOBUFS;
+		return -1;
+	}
 
 	/* append metric to buf */
 	memcpy(strm->obuf + strm->obuflen, buf, sze);
@@ -217,9 +219,11 @@ static inline ssize_t
 gzipwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ)
-		if (gzipflush(strm) != 0)
-			return -1;
+	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+		/* need to flush */
+		errno = ENOBUFS;
+		return -1;
+	}
 
 	/* append metric to buf */
 	memcpy(strm->obuf + strm->obuflen, buf, sze);
@@ -357,32 +361,16 @@ static inline int lzflush(z_strm *strm);
 static inline ssize_t
 lzwrite(z_strm *strm, const void *buf, size_t sze)
 {
-	size_t towrite = sze;
-
-	/* use the same strategy as gzip: fill the buffer until space
-	   runs out. we completely fill the output buffer before flushing */
-
-	while (towrite > 0) {
-
-		size_t avail = METRIC_BUFSIZ - strm->obuflen;
-		size_t copysize = towrite > avail ? avail : towrite;
-
-		/* copy into the output buffer as much as we can */
-
-		if (copysize > 0) {
-			memcpy(strm->obuf + strm->obuflen, buf, copysize);
-			strm->obuflen += copysize;
-			towrite -= copysize;
-			buf += copysize;
-		}
-
-		/* if output buffer is full & still have bytes to write, flush now */
-
-		if (strm->obuflen == METRIC_BUFSIZ && towrite > 0 && lzflush(strm) != 0) {
-			logerr("Failed to flush LZ4 data to make space\n");
-			return -1;
-		}
+	/* ensure we have space available */
+	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+		/* need to flush */
+		errno = ENOBUFS;
+		return -1;
 	}
+
+	/* append metric to buf */
+	memcpy(strm->obuf + strm->obuflen, buf, sze);
+	strm->obuflen += sze;
 
 	return sze;
 }
@@ -1257,7 +1245,14 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		for (; *metric != NULL; metric++) {
 			size_t mlen = *(size_t *)(*metric);
 			const char *m = *metric + sizeof(size_t);
-			if ((slen = self->strm->strmwrite(self->strm, m, mlen)) != mlen) {
+			slen = self->strm->strmwrite(self->strm, m, mlen);
+			if (slen == -1 && errno == ENOBUFS) {
+				/* Flush and retry */
+				if (self->strm->strmflush(self->strm) == 0) {
+					slen = self->strm->strmwrite(self->strm, m, mlen);
+				}
+			}
+			if (slen != mlen) {
 				/* not fully sent (after tries), or failure
 				 * close connection regardless so we don't get
 				 * synchonisation problems */
