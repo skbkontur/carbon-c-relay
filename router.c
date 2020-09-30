@@ -410,6 +410,14 @@ router *router_new(void) {
 	return ret;
 }
 
+void hint_proto(struct addrinfo *hint, con_proto proto) {
+		memset(hint, 0, sizeof(struct addrinfo));										
+		hint->ai_family = PF_UNSPEC;											
+		hint->ai_socktype = proto == CON_UDP ? SOCK_DGRAM : SOCK_STREAM;		
+		hint->ai_protocol = proto == CON_UDP ? IPPROTO_UDP : IPPROTO_TCP;	
+		hint->ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;		
+}
+
 /**
  * Parse ip string and validate it.  When it is a numeric address, write
  * the cannonical version in retip.
@@ -459,15 +467,11 @@ router_validate_address(
 	if (lastcolon == ip)
 		ip = NULL;  /* only resolve port, e.g. any interface */
 
-	memset(&hint, 0, sizeof(hint));
 	saddr = NULL;
 
 	/* try to see if this is a "numeric" IP address, which means
 	 * re-resolving lateron will make no difference */
-	hint.ai_family = PF_UNSPEC;
-	hint.ai_socktype = proto == CON_UDP ? SOCK_DGRAM : SOCK_STREAM;
-	hint.ai_protocol = proto == CON_UDP ? IPPROTO_UDP : IPPROTO_TCP;
-	hint.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;
+	hint_proto(&hint, proto);
 	snprintf(sport, sizeof(sport), "%u", port);
 
 	*rethint = NULL;
