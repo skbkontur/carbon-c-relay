@@ -38,6 +38,7 @@
 #include "server.h"
 #include "collector.h"
 #include "dispatcher_internal.h"
+#include "eventpipe.h"
 
 enum conntype {
 	LISTENER,
@@ -58,17 +59,10 @@ enum conntype {
 #define C_IN  0    /* not taken */
 /* > 0	taken by worker with id */
 
-typedef struct _ev_cmd {
-	char header[4];
-	int what;
-	void *arg;
-	dispatcher *d;
-} ev_cmd;
-
 struct _dispatcher {
 	struct event_base *evbase;
-	struct event *notify_ev;
-	int notify_fd[2];
+	struct event *notify_ev; /* not used now, libevent initialized with ptheads locks */
+	eventpipe notify_fd;
 	queue *notify_queue;
 	pthread_t tid;
 	enum conntype type;
@@ -689,8 +683,18 @@ static int dispatch_connection(connection *conn, dispatcher *self, struct timeva
 static int
 dispatch_shutdown(dispatcher *d)
 {
+	// int cmd = EV_CMD_SHUTDOWN;
+	// if (write(eventpipe_wd(&d->notify_fd), &cmd, sizeof(cmd)) == -1) {
+	// 	logerr("event_base shutdown write failed, switch to event_base_loopexit failed!\n");
+	// 	if (event_base_loopexit(d->evbase, NULL) == -1) {
+	// 		logerr("event_base_loopexit failed!\n");
+	// 		abort();
+	// 	}
+	// }
+
+	/* libevent initialized with pthreads locks */
 	if (event_base_loopexit(d->evbase, NULL) == -1) {
-		logerr("event_base_loopexit failed!\n");
+			logerr("event_base_loopexit failed!\n");
 		abort();
 	}
 	return 0;
@@ -764,9 +768,17 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
 static void
 dispatch_cmd_cb(int fd, short flags, void *arg)
 {
-    ev_cmd cmd;
+    int cmd;
+	struct timeval tv;
+	dispatcher *d = (dispatcher *) arg;
 	if (read(fd, &cmd, sizeof(cmd)) != sizeof(cmd)) {
 		logerr("dispatcher: incomplete cmd\n");
+	}
+	tv.tv_sec = 10;
+	tv.tv_usec = 0;
+	if (event_base_loopexit(d->evbase, &tv) == -1) {
+		logerr("event_base_loopexit failed!\n");
+		abort();
 	}
 }
 
@@ -1590,23 +1602,23 @@ dispatch_new(
 		return NULL;
 	}
 
-	if (socketpair(AF_LOCAL, SOCK_STREAM, 0, ret->notify_fd) == -1) {
+	if (eventpipe_init(&ret->notify_fd) == -1) {
 		queue_free(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
 	}
 
-	ret->notify_ev = event_new(ret->evbase, ret->notify_fd[1],
+	ret->notify_ev = event_new(ret->evbase, eventpipe_rd(&ret->notify_fd),
 		          EV_READ | EV_PERSIST, dispatch_cmd_cb, (void*) ret);
 	if (ret->notify_ev == NULL) {
-		close(ret->notify_fd[0]);
-		close(ret->notify_fd[1]);
+		eventpipe_close(&ret->notify_fd);
 		queue_free(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
 	}
+	event_priority_set(ret->notify_ev, 0); /* priority event */
 	event_add(ret->notify_ev, NULL);
 
 	ret->running = 0;
@@ -1781,6 +1793,7 @@ dispatch_free(dispatcher *d)
 	queue_destroy(d->notify_queue);
 	event_free(d->notify_ev);
 	event_base_free(d->evbase);
+	eventpipe_close(&d->notify_fd);
 	free(d);
 }
 
