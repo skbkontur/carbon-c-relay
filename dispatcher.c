@@ -137,6 +137,8 @@ static size_t errorsconnections = 0;
 static unsigned int sockbufsize = 0;
 
 /* connection specific readers and closers */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 static inline char connection_ended(ssize_t ret, int err) {
 	if (ret > 0) {
 		return 0;
@@ -148,6 +150,7 @@ static inline char connection_ended(ssize_t ret, int err) {
 		return 0;
 	}
 }
+#pragma GCC diagnostic pop
 
 /* ordinary socket */
 static inline ssize_t
