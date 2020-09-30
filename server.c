@@ -37,22 +37,7 @@
 #include "queue.h"
 #include "dispatcher.h"
 #include "collector.h"
-#include "server.h"
-
-#ifdef HAVE_GZIP
-#include <zlib.h>
-#endif
-#ifdef HAVE_LZ4
-#include <lz4.h>
-#include <lz4frame.h>
-#endif
-#ifdef HAVE_SNAPPY
-#include <snappy-c.h>
-#endif
-#ifdef HAVE_SSL
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#endif
+#include "server_internal.h"
 
 #define FAIL_WAIT_TIME   6  /* 6 * 250ms = 1.5s */
 #define DISCONNECT_WAIT_TIME   12  /* 12 * 250ms = 3s */
@@ -61,35 +46,6 @@
 int queuefree_threshold_start = 0;
 int queuefree_threshold_end = 0;
 int shutdown_timeout = 120; /* 120s */
-
-typedef struct _z_strm {
-	ssize_t (*strmwrite)(struct _z_strm *, const void *, size_t);
-	int (*strmflush)(struct _z_strm *);
-	int (*strmclose)(struct _z_strm *);
-	const char *(*strmerror)(struct _z_strm *, int);     /* get last err str */
-	struct _z_strm *nextstrm;                            /* set when chained */
-	char obuf[METRIC_BUFSIZ];
-	int obuflen;
-#ifdef HAVE_SSL
-	SSL_CTX *ctx;
-#endif
-	union {
-#ifdef HAVE_GZIP
-		z_streamp gz;
-#endif
-#ifdef HAVE_LZ4
-		struct {
-			void *cbuf;
-			size_t cbuflen;
-		} z;
-#endif
-#ifdef HAVE_SSL
-		SSL *ssl;
-#endif
-		int sock;
-	} hdl;
-} z_strm;
-
 
 struct _server {
 	const char *ip;
@@ -678,6 +634,13 @@ sslsetup(server *s) {
 	return 0;
 }
 #endif
+
+/* only for internal tests, not used in code */
+z_strm *
+server_get_strm(server *s)
+{
+	return s->strm;
+}
 
 /* metrics in server stream buffer, detected by endline */
 size_t server_metrics_in_buffer(server *s) {
