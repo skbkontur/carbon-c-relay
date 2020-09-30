@@ -43,8 +43,9 @@
 
 typedef struct _z_strm {
 	ssize_t (*strmread)(struct _z_strm *, void *, size_t);  /* read func */
+
 	/* read from buffer only func, on error set errno to ENOMEM, EMSGSIZE or EBADMSG */
-	ssize_t (*strmreadbuf)(struct _z_strm *, void *, size_t, int, int);
+	ssize_t (*strmreadbuf)(struct _z_strm *, void *, size_t);
 	int (*strmclose)(struct _z_strm *);
 	union {
 #ifdef HAVE_GZIP
@@ -77,6 +78,7 @@ typedef struct _z_strm {
 	size_t isize;
 #endif
 	struct _z_strm *nextstrm;
+	char closing; /* for detect end read from compressed buffered streams */
 } z_strm;
 
 z_strm *

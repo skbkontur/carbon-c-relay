@@ -137,6 +137,17 @@ static size_t errorsconnections = 0;
 static unsigned int sockbufsize = 0;
 
 /* connection specific readers and closers */
+static inline char connection_ended(ssize_t ret, int err) {
+	if (ret > 0) {
+		return 0;
+	} else if (ret == 0) {
+		return 1;
+	} else if (err != EINTR && err != EAGAIN && err != EWOULDBLOCK) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
 
 /* ordinary socket */
 static inline ssize_t
@@ -192,7 +203,7 @@ udpsockclose(z_strm *strm)
 #ifdef HAVE_GZIP
 /* gzip wrapped socket */
 static inline ssize_t
-gzipreadbuf(z_strm *strm, void *buf, size_t sze, int last_ret, int err);
+gzipreadbuf(z_strm *strm, void *buf, size_t sze);
 
 static inline ssize_t
 gzipread(z_strm *strm, void *buf, size_t sze)
@@ -216,6 +227,7 @@ gzipread(z_strm *strm, void *buf, size_t sze)
 	ret = strm->nextstrm->strmread(strm->nextstrm,
 			strm->ibuf + strm->ipos,
 			strm->isize - strm->ipos);
+	strm->closing = connection_ended(ret, errno);
 	if (ret > 0) {
 		zstrm->avail_in += ret;
 		strm->ipos += ret;
@@ -231,12 +243,12 @@ gzipread(z_strm *strm, void *buf, size_t sze)
 		return 0;
 	}
 
-	return gzipreadbuf(strm, buf, sze, ret, errno);
+	return gzipreadbuf(strm, buf, sze);
 }
 
 /* read data from buffer */
 static inline ssize_t
-gzipreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
+gzipreadbuf(z_strm *strm, void *buf, size_t sze)
 {
 	z_stream *zstrm = &(strm->hdl.gz.z);
 	int iret;
@@ -275,8 +287,9 @@ gzipreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
 		if (strm->ipos == strm->isize) {
 			logerr("buffer overflow during read of gzip stream\n");
 			errno = EBADMSG;
-		} else if (rval < 0)
-			errno = err ? err : EAGAIN;
+		} else if (strm->closing == 0) {
+			errno = EAGAIN;
+		}
 	}
 
 	return (ssize_t)iret;
@@ -324,15 +337,13 @@ gzipnew(char *ibuf, size_t isize, z_strm *basestrm)
 #ifdef HAVE_LZ4
 /* lz4 wrapped socket */
 static inline ssize_t
-lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
-
-static inline ssize_t
-lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
+lzreadbuf(z_strm *strm, void *buf, size_t sze);
 
 static inline ssize_t
 lzread(z_strm *strm, void *buf, size_t sze)
 {
 	int ret;
+
 	/* update ibuf */
 	if (strm->hdl.lz4.iloc > 0) {
 		memmove(strm->ibuf, strm->ibuf + strm->hdl.lz4.iloc, strm->ipos - strm->hdl.lz4.iloc);
@@ -347,7 +358,7 @@ lzread(z_strm *strm, void *buf, size_t sze)
 	/* read any available data, if it fits */
 	ret = strm->nextstrm->strmread(strm->nextstrm,
 			strm->ibuf + strm->ipos, strm->isize - strm->ipos);
-
+	strm->closing = connection_ended(ret, errno);
 	/* if EOF(0) or no-data(-1) then only get out now if the input
 	 * buffer is empty because start of next frame may be waiting for us */
 
@@ -361,11 +372,12 @@ lzread(z_strm *strm, void *buf, size_t sze)
 		if (strm->ipos == 0)
 			return 0;
 	}
-	return lzreadbuf(strm, buf, sze, ret, errno);
+
+	return lzreadbuf(strm, buf, sze);
 }
 
 static inline ssize_t
-lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
+lzreadbuf(z_strm *strm, void *buf, size_t sze)
 {
 	/* attempt to decompress something from the (partial) frame that's
 	 * arrived so far.  srcsize is updated to the number of bytes
@@ -393,14 +405,13 @@ lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
 		if (strm->hdl.lz4.iloc == 0 && strm->ipos == strm->isize) {
 			logerr("Error %s reading LZ4 compressed data, input buffer overflow\n", LZ4F_getErrorName(ret));
 			errno = EBADMSG;
-		} else if (rval == 0 ||
-				   (rval == -1 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) {
+		} else if (strm->closing) {
 			logerr("Error %s reading LZ4 compressed data, lost %lu bytes in input buffer\n",
 				   LZ4F_getErrorName(ret), strm->ipos - strm->hdl.lz4.iloc);
 			errno = EBADMSG;
-		} else
-			errno = err ? err : EAGAIN;
-
+		} else {
+			errno = EAGAIN;
+		}
 		return -1;
 	}
 
@@ -410,8 +421,12 @@ lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
 		strm->hdl.lz4.iloc += srcsize;
 	} else if (destsize == 0) {
 		tracef("No LZ4 data was produced\n");
-		errno = err ? err : EAGAIN;
-		return -1;
+		if (strm->closing) {
+			return 0;
+		} else {
+			errno = EAGAIN;
+			return -1;
+		}
 	}
 
 #ifdef ENABLE_TRACE
@@ -463,10 +478,7 @@ lznew(char *ibuf, size_t isize, z_strm *basestrm)
 #ifdef HAVE_SNAPPY
 /* snappy wrapped socket */
 static inline ssize_t
-snappyreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
-
-static inline ssize_t
-snappyreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
+snappyreadbuf(z_strm *strm, void *buf, size_t sze);
 
 static inline ssize_t
 snappyread(z_strm *strm, void *buf, size_t sze)
@@ -479,6 +491,7 @@ snappyread(z_strm *strm, void *buf, size_t sze)
 	ret = strm->nextstrm->strmread(strm->nextstrm,
 			ibuf + strm->ipos,
 			strm->isize - strm->ipos);
+	strm->closing = connection_ended(ret, errno);
 	if (ret > 0) {
 		strm->ipos += ret;
 	} else if (ret < 0) {
@@ -504,8 +517,9 @@ snappyread(z_strm *strm, void *buf, size_t sze)
 }
 
 static inline ssize_t
-snappyreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
+snappyreadbuf(z_strm *strm, void *buf, size_t sze)
 {
+	/* not implemented */
 	return 0;
 }
 
@@ -1478,7 +1492,6 @@ static int
 dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 {
 	ssize_t len;
-	int err;
 
 	/* TODO: timeout */
 	/* first try to resume any work being blocked */
@@ -1507,12 +1520,11 @@ dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 #endif
 		}
 
-		err = errno;
 		dispatch_received_metrics(conn, self);
 		if (conn->strm->strmreadbuf != NULL) {
 			while((ilen = conn->strm->strmreadbuf(conn->strm,
 							conn->buf + conn->buflen,
-							(sizeof(conn->buf) - 1) - conn->buflen, len, err)) > 0) {
+							(sizeof(conn->buf) - 1) - conn->buflen)) > 0) {
 				conn->buflen += ilen;
 				tracef("dispatcher %d, connfd %d, read %zd bytes from socket\n",
 						self->id, conn->sock, ilen);
