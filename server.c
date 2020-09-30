@@ -939,13 +939,6 @@ char server_connect(server *self)
 
 #ifdef HAVE_GZIP
 	if ((self->transport & 0xFFFF) == W_GZIP) {
-		self->strm->hdl.gz = malloc(sizeof(z_stream));
-		if (self->strm->hdl.gz != NULL) {
-			self->strm->hdl.gz->zalloc = Z_NULL;
-			self->strm->hdl.gz->zfree = Z_NULL;
-			self->strm->hdl.gz->opaque = Z_NULL;
-			self->strm->hdl.gz->next_in = Z_NULL;
-		}
 		if (gzipalloc(self->strm) == -1) {
 			__sync_add_and_fetch(&(self->failure), 1);
 			close(self->fd);
