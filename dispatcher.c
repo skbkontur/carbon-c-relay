@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -38,65 +37,14 @@
 #include "router.h"
 #include "server.h"
 #include "collector.h"
-#include "dispatcher.h"
-
-#ifdef HAVE_GZIP
-#include <zlib.h>
-#endif
-#ifdef HAVE_LZ4
-#include <lz4.h>
-#include <lz4frame.h>
-#endif
-#ifdef HAVE_SNAPPY
-#include <snappy-c.h>
-#endif
-#ifdef HAVE_SSL
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#endif
+#include "dispatcher_internal.h"
+#include "eventpipe.h"
 
 enum conntype {
 	LISTENER,
 	CONNECTION
 };
 
-typedef struct _z_strm {
-	ssize_t (*strmread)(struct _z_strm *, void *, size_t);  /* read func */
-	/* read from buffer only func, on error set errno to ENOMEM, EMSGSIZE or EBADMSG */
-	ssize_t (*strmreadbuf)(struct _z_strm *, void *, size_t, int, int);
-	int (*strmclose)(struct _z_strm *);
-	union {
-#ifdef HAVE_GZIP
-		struct gz {
-			z_stream z;
-			int inflatemode;
-		} gz;
-#endif
-#ifdef HAVE_LZ4
-		struct lz4 {
-			LZ4F_decompressionContext_t lz;
-			size_t iloc; /* location for unprocessed input */
-		} lz4;
-#endif
-#ifdef HAVE_SSL
-		SSL *ssl;
-#endif
-		int sock;
-		/* udp variant (in order to receive info about sender) */
-		struct udp_strm {
-			int sock;
-			struct sockaddr_in6 saddr;
-			char *srcaddr;
-			size_t srcaddrlen;
-		} udp;
-	} hdl;
-#if defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
-	char *ibuf;
-	size_t ipos;
-	size_t isize;
-#endif
-	struct _z_strm *nextstrm;
-} z_strm;
 
 #define SOCKGROWSZ  32768
 #define CONNGROWSZ  1024
@@ -111,17 +59,10 @@ typedef struct _z_strm {
 #define C_IN  0    /* not taken */
 /* > 0	taken by worker with id */
 
-typedef struct _ev_cmd {
-	char header[4];
-	int what;
-	void *arg;
-	dispatcher *d;
-} ev_cmd;
-
 struct _dispatcher {
 	struct event_base *evbase;
-	struct event *notify_ev;
-	int notify_fd[2];
+	struct event *notify_ev; /* not used now, libevent initialized with ptheads locks */
+	eventpipe notify_fd;
 	queue *notify_queue;
 	pthread_t tid;
 	enum conntype type;
@@ -196,6 +137,20 @@ static size_t errorsconnections = 0;
 static unsigned int sockbufsize = 0;
 
 /* connection specific readers and closers */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+static inline char connection_ended(ssize_t ret, int err) {
+	if (ret > 0) {
+		return 0;
+	} else if (ret == 0) {
+		return 1;
+	} else if (err != EINTR && err != EAGAIN && err != EWOULDBLOCK) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+#pragma GCC diagnostic pop
 
 /* ordinary socket */
 static inline ssize_t
@@ -251,7 +206,7 @@ udpsockclose(z_strm *strm)
 #ifdef HAVE_GZIP
 /* gzip wrapped socket */
 static inline ssize_t
-gzipreadbuf(z_strm *strm, void *buf, size_t sze, int last_ret, int err);
+gzipreadbuf(z_strm *strm, void *buf, size_t sze);
 
 static inline ssize_t
 gzipread(z_strm *strm, void *buf, size_t sze)
@@ -275,6 +230,7 @@ gzipread(z_strm *strm, void *buf, size_t sze)
 	ret = strm->nextstrm->strmread(strm->nextstrm,
 			strm->ibuf + strm->ipos,
 			strm->isize - strm->ipos);
+	strm->closing = connection_ended(ret, errno);
 	if (ret > 0) {
 		zstrm->avail_in += ret;
 		strm->ipos += ret;
@@ -290,12 +246,12 @@ gzipread(z_strm *strm, void *buf, size_t sze)
 		return 0;
 	}
 
-	return gzipreadbuf(strm, buf, sze, ret, errno);
+	return gzipreadbuf(strm, buf, sze);
 }
 
 /* read data from buffer */
 static inline ssize_t
-gzipreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
+gzipreadbuf(z_strm *strm, void *buf, size_t sze)
 {
 	z_stream *zstrm = &(strm->hdl.gz.z);
 	int iret;
@@ -334,8 +290,9 @@ gzipreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
 		if (strm->ipos == strm->isize) {
 			logerr("buffer overflow during read of gzip stream\n");
 			errno = EBADMSG;
-		} else if (rval < 0)
-			errno = err ? err : EAGAIN;
+		} else if (strm->closing == 0) {
+			errno = EAGAIN;
+		}
 	}
 
 	return (ssize_t)iret;
@@ -350,20 +307,46 @@ gzipclose(z_strm *strm)
 	free(strm);
 	return ret;
 }
+
+z_strm *
+gzipnew(char *ibuf, size_t isize, z_strm *basestrm)
+{
+	z_strm *zstrm = malloc(sizeof(z_strm));
+	if (zstrm == NULL) {
+		return NULL;
+	}
+	zstrm->hdl.gz.z.zalloc = Z_NULL;
+	zstrm->hdl.gz.z.zfree = Z_NULL;
+	zstrm->hdl.gz.z.opaque = Z_NULL;
+	zstrm->ipos = 0;
+	inflateInit2(&(zstrm->hdl.gz.z), 15 + 16);
+	zstrm->hdl.gz.inflatemode = Z_SYNC_FLUSH;
+
+	zstrm->ibuf = ibuf;
+	zstrm->isize = isize;
+	zstrm->hdl.gz.z.next_in = (Bytef *)zstrm->ibuf;
+	zstrm->hdl.gz.z.avail_in = 0;
+
+	zstrm->strmread = &gzipread;
+	zstrm->strmreadbuf = &gzipreadbuf;
+	zstrm->strmclose = &gzipclose;
+
+	zstrm->nextstrm = basestrm;
+
+	return zstrm;
+}
 #endif
 
 #ifdef HAVE_LZ4
 /* lz4 wrapped socket */
 static inline ssize_t
-lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
-
-static inline ssize_t
-lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
+lzreadbuf(z_strm *strm, void *buf, size_t sze);
 
 static inline ssize_t
 lzread(z_strm *strm, void *buf, size_t sze)
 {
 	int ret;
+
 	/* update ibuf */
 	if (strm->hdl.lz4.iloc > 0) {
 		memmove(strm->ibuf, strm->ibuf + strm->hdl.lz4.iloc, strm->ipos - strm->hdl.lz4.iloc);
@@ -371,14 +354,14 @@ lzread(z_strm *strm, void *buf, size_t sze)
 		strm->hdl.lz4.iloc = 0;
 	} else if (strm->ipos == strm->isize) {
 		logerr("buffer overflow during read of lz4 stream\n");
-		errno = EMSGSIZE;
+		errno = ENOBUFS;
 		return -1;
 	}
 
 	/* read any available data, if it fits */
 	ret = strm->nextstrm->strmread(strm->nextstrm,
 			strm->ibuf + strm->ipos, strm->isize - strm->ipos);
-
+	strm->closing = connection_ended(ret, errno);
 	/* if EOF(0) or no-data(-1) then only get out now if the input
 	 * buffer is empty because start of next frame may be waiting for us */
 
@@ -392,11 +375,12 @@ lzread(z_strm *strm, void *buf, size_t sze)
 		if (strm->ipos == 0)
 			return 0;
 	}
-	return lzreadbuf(strm, buf, sze, ret, errno);
+
+	return lzreadbuf(strm, buf, sze);
 }
 
 static inline ssize_t
-lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
+lzreadbuf(z_strm *strm, void *buf, size_t sze)
 {
 	/* attempt to decompress something from the (partial) frame that's
 	 * arrived so far.  srcsize is updated to the number of bytes
@@ -423,15 +407,14 @@ lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
 		 * return a generic code */
 		if (strm->hdl.lz4.iloc == 0 && strm->ipos == strm->isize) {
 			logerr("Error %s reading LZ4 compressed data, input buffer overflow\n", LZ4F_getErrorName(ret));
-			errno = EBADMSG;
-		} else if (rval == 0 ||
-				   (rval == -1 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) {
+			errno = ENOBUFS;
+		} else if (strm->closing) {
 			logerr("Error %s reading LZ4 compressed data, lost %lu bytes in input buffer\n",
 				   LZ4F_getErrorName(ret), strm->ipos - strm->hdl.lz4.iloc);
 			errno = EBADMSG;
-		} else
-			errno = err ? err : EAGAIN;
-
+		} else {
+			errno = EAGAIN;
+		}
 		return -1;
 	}
 
@@ -441,8 +424,12 @@ lzreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
 		strm->hdl.lz4.iloc += srcsize;
 	} else if (destsize == 0) {
 		tracef("No LZ4 data was produced\n");
-		errno = err ? err : EAGAIN;
-		return -1;
+		if (strm->closing) {
+			return 0;
+		} else {
+			errno = EAGAIN;
+			return -1;
+		}
 	}
 
 #ifdef ENABLE_TRACE
@@ -463,15 +450,38 @@ lzclose(z_strm *strm)
 	free(strm);
 	return ret;
 }
+
+z_strm *
+lznew(char *ibuf, size_t isize, z_strm *basestrm)
+{
+	z_strm *lzstrm = malloc(sizeof(z_strm));
+	if (lzstrm == NULL) {
+		return NULL;
+	}
+	if (LZ4F_isError(LZ4F_createDecompressionContext(&lzstrm->hdl.lz4.lz, LZ4F_VERSION))) {
+		errno = EBADR;
+		free(lzstrm);
+		return NULL;
+	}
+	lzstrm->ibuf = ibuf;
+	lzstrm->isize = isize;
+	lzstrm->ipos = 0;
+	lzstrm->hdl.lz4.iloc = 0;
+
+	lzstrm->strmread = &lzread;
+	lzstrm->strmreadbuf = &lzreadbuf;
+	lzstrm->strmclose = &lzclose;
+
+	lzstrm->nextstrm = basestrm;
+
+	return lzstrm;
+}
 #endif
 
 #ifdef HAVE_SNAPPY
 /* snappy wrapped socket */
 static inline ssize_t
-snappyreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
-
-static inline ssize_t
-snappyreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err);
+snappyreadbuf(z_strm *strm, void *buf, size_t sze);
 
 static inline ssize_t
 snappyread(z_strm *strm, void *buf, size_t sze)
@@ -484,6 +494,7 @@ snappyread(z_strm *strm, void *buf, size_t sze)
 	ret = strm->nextstrm->strmread(strm->nextstrm,
 			ibuf + strm->ipos,
 			strm->isize - strm->ipos);
+	strm->closing = connection_ended(ret, errno);
 	if (ret > 0) {
 		strm->ipos += ret;
 	} else if (ret < 0) {
@@ -509,8 +520,9 @@ snappyread(z_strm *strm, void *buf, size_t sze)
 }
 
 static inline ssize_t
-snappyreadbuf(z_strm *strm, void *buf, size_t sze, int rval, int err)
+snappyreadbuf(z_strm *strm, void *buf, size_t sze)
 {
+	/* not implemented */
 	return 0;
 }
 
@@ -521,6 +533,27 @@ snappyclose(z_strm *strm)
 	free(strm->ibuf);
 	free(strm);
 	return ret;
+}
+
+z_strm *
+snappynew(char *ibuf, size_t isize, z_strm *basestrm)
+{
+	z_strm *sstrm = malloc(sizeof(z_strm));
+	if (sstrm == NULL) {
+		return NULL;
+	}
+
+	sstrm->ibuf = ibuf;
+	sstrm->isize = METRIC_BUFSIZ;
+	sstrm->ipos = 0;
+
+	sstrm->strmread = &snappyread;
+	sstrm->strmreadbuf = &snappyreadbuf;
+	sstrm->strmclose = &snappyclose;
+
+	sstrm->nextstrm = basestrm;
+
+	return sstrm;
 }
 #endif
 
@@ -542,6 +575,121 @@ sslclose(z_strm *strm)
 }
 #endif
 
+z_strm *
+connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
+			#ifdef HAVE_SSL
+			, SSL_CTX *ctx
+			#else
+			, void *empthy
+			#endif
+)
+{
+	int compress_type =	transport & 0xFFFF;
+#if defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)	
+	char *ibuf;
+#endif
+	z_strm *strm = malloc(sizeof(z_strm));
+	if (strm == NULL) {
+		logerr("cannot add new connection: "
+				"out of memory allocating stream\n");		
+		return NULL;
+	}
+
+	/* set socket or SSL connection */
+	strm->nextstrm = NULL;
+	strm->strmreadbuf = NULL;
+	if ((transport & ~0xFFFF) != W_SSL) {
+		if (ctype != CON_UDP) {
+			strm->hdl.sock = sock;
+			strm->strmread = &sockread;
+			strm->strmclose = &sockclose;
+		} else {
+			strm->hdl.udp.sock = sock;
+			strm->hdl.udp.srcaddr = srcaddr;
+			strm->hdl.udp.srcaddrlen =
+				sizeof(srcaddr);
+			strm->strmread = &udpsockread;
+			strm->strmclose = &udpsockclose;
+		}
+#ifdef HAVE_SSL
+	} else {
+		if ((strm->hdl.ssl = SSL_new(ctx)) == NULL) {
+			free(strm);
+			return NULL;
+		};
+		SSL_set_fd(strm->hdl.ssl, sock);
+		SSL_set_accept_state(strm->hdl.ssl);
+
+		strm->strmread = &sslread;
+		strm->strmclose = &sslclose;
+#endif
+	}
+
+#if defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
+	/* allocate input buffer */
+	if (compress_type == W_GZIP || compress_type == W_LZ4 || compress_type == W_SNAPPY) {
+		ibuf = malloc(METRIC_BUFSIZ);
+		if (ibuf == NULL) {
+			free(strm);
+			logerr("cannot add new connection: "
+					"out of memory allocating stream ibuf\n");
+			return NULL;
+		}
+	} else
+		ibuf = NULL;
+#endif
+
+
+	/* setup decompressor */
+	if (compress_type == 0) {
+		/* do nothing, catch case only */
+	}
+#ifdef HAVE_GZIP
+	else if (compress_type == W_GZIP) {
+		z_strm *zstrm = gzipnew(ibuf, METRIC_BUFSIZ, strm);
+		if (zstrm == NULL) {
+			logerr("cannot add new connection: "
+					"out of memory allocating gzip stream\n");
+			free(ibuf);
+			free(strm);
+			return NULL;
+		}
+		strm = zstrm;
+	}
+#endif
+#ifdef HAVE_LZ4
+	else if (compress_type == W_LZ4) {
+		z_strm *lzstrm = lznew(ibuf, METRIC_BUFSIZ, strm);
+		if (lzstrm == NULL) {
+			if (errno == EBADR) {
+				logerr("Failed to create LZ4 decompression context\n");
+			} else {
+				logerr("cannot add new connection: "
+					"out of memory allocating lz4 stream\n");
+			}
+			free(ibuf);
+			free(strm);
+			return NULL;
+		}
+		strm = lzstrm;
+	}
+#endif
+#ifdef HAVE_SNAPPY
+	else if (compress_type == W_SNAPPY) {
+		z_strm *sstrm = snappynew(ibuf, METRIC_BUFSIZ, strm);
+		if (sstrm == NULL) {
+			logerr("cannot add new connection: "
+					"out of memory allocating snappy stream\n");
+			free(ibuf);
+			free(strm);
+			return NULL;
+		}
+		strm = sstrm;
+	}
+#endif
+	return strm;
+}
+
 static void dispatch_closeconnection(dispatcher *d, connection *conn, ssize_t len);
 static void dispatch_releaseconnection(int sock);
 static int dispatch_connection(connection *conn, dispatcher *self, struct timeval start);
@@ -552,8 +700,18 @@ static int dispatch_connection(connection *conn, dispatcher *self, struct timeva
 static int
 dispatch_shutdown(dispatcher *d)
 {
+	// int cmd = EV_CMD_SHUTDOWN;
+	// if (write(eventpipe_wd(&d->notify_fd), &cmd, sizeof(cmd)) == -1) {
+	// 	logerr("event_base shutdown write failed, switch to event_base_loopexit failed!\n");
+	// 	if (event_base_loopexit(d->evbase, NULL) == -1) {
+	// 		logerr("event_base_loopexit failed!\n");
+	// 		abort();
+	// 	}
+	// }
+
+	/* libevent initialized with pthreads locks */
 	if (event_base_loopexit(d->evbase, NULL) == -1) {
-		logerr("event_base_loopexit failed!\n");
+			logerr("event_base_loopexit failed!\n");
 		abort();
 	}
 	return 0;
@@ -627,9 +785,17 @@ void dispatch_accept_cb(int fd, short flags, void *arg)
 static void
 dispatch_cmd_cb(int fd, short flags, void *arg)
 {
-    ev_cmd cmd;
+    int cmd;
+	struct timeval tv;
+	dispatcher *d = (dispatcher *) arg;
 	if (read(fd, &cmd, sizeof(cmd)) != sizeof(cmd)) {
 		logerr("dispatcher: incomplete cmd\n");
+	}
+	tv.tv_sec = 10;
+	tv.tv_usec = 0;
+	if (event_base_loopexit(d->evbase, &tv) == -1) {
+		logerr("event_base_loopexit failed!\n");
+		abort();
 	}
 }
 
@@ -939,11 +1105,14 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 {
 	int c;
 	connection *conn;
+	con_proto ctype;
+    con_trnsp transport;
 	struct sockaddr_in6 saddr;
 	socklen_t saddr_len = sizeof(saddr);
-#if defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
-	int compress_type;
-	char *ibuf;
+#ifdef HAVE_SSL
+	SSL_CTX *ctx;
+#else
+	void *ctx;
 #endif
 
 	pthread_rwlock_rdlock(&connectionslock);
@@ -1021,163 +1190,25 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 			;
 	}
 	conn->sock = sock;
-	conn->strm = malloc(sizeof(z_strm));
-	if (conn->strm == NULL) {
+	if (lsnr == NULL) {
+		ctype = CON_TCP;
+		transport = W_PLAIN;
+		ctx = NULL;
+	} else {
+		ctype = lsnr->ctype;
+		transport = lsnr->transport;
+		#ifdef HAVE_SSL
+			ctx = lsnr->ctx;
+		#else
+			ctx = NULL;
+		#endif
+	}
+
+	if ((conn->strm = connectionnew(sock, conn->srcaddr, ctype, transport, ctx)) == NULL) {
 		dispatch_releaseconnection(sock);
-		__sync_add_and_fetch(&d->connections, -1);
-		logerr("cannot add new connection: "
-				"out of memory allocating stream\n");
+		__sync_sub_and_fetch(&d->connections, 1);
 		return NULL;
 	}
-
-	/* set socket or SSL connection */
-	conn->strm->nextstrm = NULL;
-	conn->strm->strmreadbuf = NULL;
-	if (lsnr == NULL || (lsnr->transport & ~0xFFFF) != W_SSL) {
-		if (lsnr == NULL || lsnr->ctype != CON_UDP) {
-			conn->strm->hdl.sock = sock;
-			conn->strm->strmread = &sockread;
-			conn->strm->strmclose = &sockclose;
-		} else {
-			conn->strm->hdl.udp.sock = sock;
-			conn->strm->hdl.udp.srcaddr =
-				conn->srcaddr;
-			conn->strm->hdl.udp.srcaddrlen =
-				sizeof(conn->srcaddr);
-			conn->strm->strmread = &udpsockread;
-			conn->strm->strmclose = &udpsockclose;
-		}
-#ifdef HAVE_SSL
-	} else {
-		if ((conn->strm->hdl.ssl = SSL_new(lsnr->ctx)) == NULL) {
-			free(conn->strm);
-			dispatch_releaseconnection(sock);
-			__sync_add_and_fetch(&d->connections, -1);
-			logerr("cannot add new connection: %s\n",
-					ERR_reason_error_string(ERR_get_error()));
-			return NULL;
-		};
-		SSL_set_fd(conn->strm->hdl.ssl, sock);
-		SSL_set_accept_state(conn->strm->hdl.ssl);
-
-		conn->strm->strmread = &sslread;
-		conn->strm->strmclose = &sslclose;
-#endif
-	}
-
-#if defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
-	if (lsnr == NULL)
-		compress_type = 0;
-	else
-		compress_type = lsnr->transport & 0xFFFF;
-
-	/* allocate input buffer */
-	if (compress_type == W_GZIP || compress_type == W_LZ4 || compress_type == W_SNAPPY) {
-		ibuf = malloc(METRIC_BUFSIZ);
-		if (ibuf == NULL) {
-			free(conn->strm);
-			dispatch_releaseconnection(sock);
-			__sync_add_and_fetch(&d->connections, -1);
-			logerr("cannot add new connection: "
-					"out of memory allocating stream ibuf\n");
-			return NULL;
-		}
-	} else
-		ibuf = NULL;
-#endif
-
-
-	/* setup decompressor */
-	if (lsnr == NULL) {
-		/* do nothing, catch case only */
-	}
-#ifdef HAVE_GZIP
-	else if (compress_type == W_GZIP) {
-		z_strm *zstrm = malloc(sizeof(z_strm));
-		if (zstrm == NULL) {
-			logerr("cannot add new connection: "
-					"out of memory allocating gzip stream\n");
-			free(ibuf);
-			free(conn->strm);
-			dispatch_releaseconnection(sock);
-			__sync_add_and_fetch(&d->connections, -1);
-			return NULL;
-		}
-		zstrm->hdl.gz.z.zalloc = Z_NULL;
-		zstrm->hdl.gz.z.zfree = Z_NULL;
-		zstrm->hdl.gz.z.opaque = Z_NULL;
-		zstrm->ipos = 0;
-		inflateInit2(&(zstrm->hdl.gz.z), 15 + 16);
-		zstrm->hdl.gz.inflatemode = Z_SYNC_FLUSH;
-
-		zstrm->ibuf = ibuf;
-		zstrm->isize = METRIC_BUFSIZ;
-		zstrm->hdl.gz.z.next_in = (Bytef *)zstrm->ibuf;
-		zstrm->hdl.gz.z.avail_in = 0;
-
-		zstrm->strmread = &gzipread;
-		zstrm->strmreadbuf = &gzipreadbuf;
-		zstrm->strmclose = &gzipclose;
-		zstrm->nextstrm = conn->strm;
-		conn->strm = zstrm;
-	}
-#endif
-#ifdef HAVE_LZ4
-	else if (compress_type == W_LZ4) {
-		z_strm *lzstrm = malloc(sizeof(z_strm));
-		if (lzstrm == NULL) {
-			logerr("cannot add new connection: "
-					"out of memory allocating lz4 stream\n");
-			free(ibuf);
-			free(conn->strm);
-			dispatch_releaseconnection(sock);
-			__sync_add_and_fetch(&d->connections, -1);
-			return NULL;
-		}
-		if (LZ4F_isError(LZ4F_createDecompressionContext(&lzstrm->hdl.lz4.lz, LZ4F_VERSION))) {
-			logerr("Failed to create LZ4 decompression context\n");
-			free(ibuf);
-			free(conn->strm);
-			dispatch_releaseconnection(sock);
-			__sync_add_and_fetch(&d->connections, -1);
-			return NULL;
-		}
-		lzstrm->ibuf = ibuf;
-		lzstrm->isize = METRIC_BUFSIZ;
-		lzstrm->ipos = 0;
-		lzstrm->hdl.lz4.iloc = 0;
-
-		lzstrm->strmread = &lzread;
-		lzstrm->strmreadbuf = &lzreadbuf;
-		lzstrm->strmclose = &lzclose;
-		lzstrm->nextstrm = conn->strm;
-		conn->strm = lzstrm;
-	}
-#endif
-#ifdef HAVE_SNAPPY
-	else if (compress_type == W_SNAPPY) {
-		z_strm *lzstrm = malloc(sizeof(z_strm));
-		if (lzstrm == NULL) {
-			logerr("cannot add new connection: "
-					"out of memory allocating snappy stream\n");
-			free(ibuf);
-			free(conn->strm);
-			dispatch_releaseconnection(sock);
-			__sync_add_and_fetch(&d->connections, -1);
-			return NULL;
-		}
-
-		lzstrm->ibuf = ibuf;
-		lzstrm->isize = METRIC_BUFSIZ;
-		lzstrm->ipos = 0;
-
-		lzstrm->strmread = &snappyread;
-		lzstrm->strmreadbuf = &snappyreadbuf;
-		lzstrm->strmclose = &snappyclose;
-		lzstrm->nextstrm = conn->strm;
-		conn->strm = lzstrm;
-	}
-#endif
 
 	conn->buflen = 0;
 	conn->needmore = 0;
@@ -1202,7 +1233,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	if (dispatch_connection_to_worker(d, conn) == -1) {
 		dispatch_closeconnection(d, conn, 0);
 		__sync_add_and_fetch(&errorsconnections, 1);
-		__sync_add_and_fetch(&d->connections, -1);
+		__sync_sub_and_fetch(&d->connections, 1);
 		logerr("dispatch %d: failed to "
 				"pass new connection on socket %d\n",
 				d->id, sock);
@@ -1464,7 +1495,6 @@ static int
 dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 {
 	ssize_t len;
-	int err;
 
 	/* TODO: timeout */
 	/* first try to resume any work being blocked */
@@ -1493,12 +1523,11 @@ dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 #endif
 		}
 
-		err = errno;
 		dispatch_received_metrics(conn, self);
 		if (conn->strm->strmreadbuf != NULL) {
 			while((ilen = conn->strm->strmreadbuf(conn->strm,
 							conn->buf + conn->buflen,
-							(sizeof(conn->buf) - 1) - conn->buflen, len, err)) > 0) {
+							(sizeof(conn->buf) - 1) - conn->buflen)) > 0) {
 				conn->buflen += ilen;
 				tracef("dispatcher %d, connfd %d, read %zd bytes from socket\n",
 						self->id, conn->sock, ilen);
@@ -1588,23 +1617,23 @@ dispatch_new(
 		return NULL;
 	}
 
-	if (socketpair(AF_LOCAL, SOCK_STREAM, 0, ret->notify_fd) == -1) {
+	if (eventpipe_init(&ret->notify_fd) == -1) {
 		queue_free(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
 	}
 
-	ret->notify_ev = event_new(ret->evbase, ret->notify_fd[1],
+	ret->notify_ev = event_new(ret->evbase, eventpipe_rd(&ret->notify_fd),
 		          EV_READ | EV_PERSIST, dispatch_cmd_cb, (void*) ret);
 	if (ret->notify_ev == NULL) {
-		close(ret->notify_fd[0]);
-		close(ret->notify_fd[1]);
+		eventpipe_close(&ret->notify_fd);
 		queue_free(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
 	}
+	event_priority_set(ret->notify_ev, 0); /* priority event */
 	event_add(ret->notify_ev, NULL);
 
 	ret->running = 0;
@@ -1779,6 +1808,7 @@ dispatch_free(dispatcher *d)
 	queue_destroy(d->notify_queue);
 	event_free(d->notify_ev);
 	event_base_free(d->evbase);
+	eventpipe_close(&d->notify_fd);
 	free(d);
 }
 

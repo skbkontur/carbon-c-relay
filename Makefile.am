@@ -54,6 +54,7 @@ SOURCES = \
 	server.c \
 	collector.c \
 	aggregator.c \
+	eventpipe.c \
 	$(NULL)
 RELAY_LIBS = $(LIBGZIP) $(LIBLZ4) $(LIBSNAPPY) $(LIBSSL) \
 			$(LIBONIGURUMA) $(LIBPCRE2) $(LIBPCRE) -levent -levent_pthreads
@@ -100,11 +101,13 @@ noinst_PROGRAMS = test_router
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
 
-if BENCH_ENABLED
+noinst_PROGRAMS += test_server_internal
+test_server_internal_SOURCES = server_internal_test.c listener_mock.c $(SOURCES)
+test_server_internal_LDADD = $(RELAY_LIBS)
+
 noinst_PROGRAMS += bench_queue
 bench_queue_SOURCES = queue_bench.c queue.c benchmark.c benchmark_threads.c pthread_barrier.c
 bench_queue_LDADD = $(RELAY_LIBS)
-endif
 
 CRTESTS = \
 	issue10 \

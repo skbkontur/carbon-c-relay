@@ -48,6 +48,8 @@
 
 #define SOCKFILE ".s.carbon-c-relay"
 
+void hint_proto(struct addrinfo *hint, con_proto proto);
+
 typedef struct {
 	const char *metric;
 	server *dest;

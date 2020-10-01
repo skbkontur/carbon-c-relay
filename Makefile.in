@@ -106,9 +106,9 @@ build_triplet = @build@
 host_triplet = @host@
 bin_PROGRAMS = relay$(EXEEXT)
 check_PROGRAMS = sendmetric$(EXEEXT)
-noinst_PROGRAMS = test_router$(EXEEXT) $(am__EXEEXT_1)
-@BENCH_ENABLED_TRUE@am__append_1 = bench_queue
-@SSL_ENABLED_TRUE@am__append_2 = dual-ssl large-ssl dual-large-ssl
+noinst_PROGRAMS = test_router$(EXEEXT) test_server_internal$(EXEEXT) \
+	bench_queue$(EXEEXT)
+@SSL_ENABLED_TRUE@am__append_1 = dual-ssl large-ssl dual-large-ssl
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/libtool.m4 \
@@ -127,7 +127,6 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libdir)" \
 	"$(DESTDIR)$(man1dir)"
-@BENCH_ENABLED_TRUE@am__EXEEXT_1 = bench_queue$(EXEEXT)
 PROGRAMS = $(bin_PROGRAMS) $(noinst_PROGRAMS)
 am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
 am__vpath_adj = case $$p in \
@@ -164,24 +163,21 @@ AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
 am__v_lt_1 = 
-am__bench_queue_SOURCES_DIST = queue_bench.c queue.c benchmark.c \
-	benchmark_threads.c pthread_barrier.c
-@BENCH_ENABLED_TRUE@am_bench_queue_OBJECTS = queue_bench.$(OBJEXT) \
-@BENCH_ENABLED_TRUE@	queue.$(OBJEXT) benchmark.$(OBJEXT) \
-@BENCH_ENABLED_TRUE@	benchmark_threads.$(OBJEXT) \
-@BENCH_ENABLED_TRUE@	pthread_barrier.$(OBJEXT)
+am_bench_queue_OBJECTS = queue_bench.$(OBJEXT) queue.$(OBJEXT) \
+	benchmark.$(OBJEXT) benchmark_threads.$(OBJEXT) \
+	pthread_barrier.$(OBJEXT)
 bench_queue_OBJECTS = $(am_bench_queue_OBJECTS)
 am__DEPENDENCIES_1 =
 am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1)
-@BENCH_ENABLED_TRUE@bench_queue_DEPENDENCIES = $(am__DEPENDENCIES_2)
+bench_queue_DEPENDENCIES = $(am__DEPENDENCIES_2)
 am__objects_1 = md5.$(OBJEXT) consistent-hash.$(OBJEXT) \
 	receptor.$(OBJEXT) dispatcher.$(OBJEXT) conffile.tab.$(OBJEXT) \
 	conffile.yy.$(OBJEXT) allocator.$(OBJEXT) router.$(OBJEXT) \
 	queue.$(OBJEXT) server.$(OBJEXT) collector.$(OBJEXT) \
-	aggregator.$(OBJEXT)
+	aggregator.$(OBJEXT) eventpipe.$(OBJEXT)
 am_relay_OBJECTS = relay.$(OBJEXT) $(am__objects_1)
 relay_OBJECTS = $(am_relay_OBJECTS)
 relay_DEPENDENCIES = $(am__DEPENDENCIES_2)
@@ -192,6 +188,10 @@ sendmetric_DEPENDENCIES = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 am_test_router_OBJECTS = router_test.$(OBJEXT) $(am__objects_1)
 test_router_OBJECTS = $(am_test_router_OBJECTS)
 test_router_DEPENDENCIES = $(am__DEPENDENCIES_2)
+am_test_server_internal_OBJECTS = server_internal_test.$(OBJEXT) \
+	listener_mock.$(OBJEXT) $(am__objects_1)
+test_server_internal_OBJECTS = $(am_test_server_internal_OBJECTS)
+test_server_internal_DEPENDENCIES = $(am__DEPENDENCIES_2)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -212,12 +212,13 @@ am__depfiles_remade = ./$(DEPDIR)/aggregator.Po \
 	./$(DEPDIR)/benchmark_threads.Po ./$(DEPDIR)/collector.Po \
 	./$(DEPDIR)/conffile.tab.Po ./$(DEPDIR)/conffile.yy.Po \
 	./$(DEPDIR)/consistent-hash.Po ./$(DEPDIR)/dispatcher.Po \
-	./$(DEPDIR)/faketime.Plo ./$(DEPDIR)/md5.Po \
+	./$(DEPDIR)/eventpipe.Po ./$(DEPDIR)/faketime.Plo \
+	./$(DEPDIR)/listener_mock.Po ./$(DEPDIR)/md5.Po \
 	./$(DEPDIR)/pthread_barrier.Po ./$(DEPDIR)/queue.Po \
 	./$(DEPDIR)/queue_bench.Po ./$(DEPDIR)/receptor.Po \
 	./$(DEPDIR)/relay.Po ./$(DEPDIR)/router.Po \
 	./$(DEPDIR)/router_test.Po ./$(DEPDIR)/sendmetric.Po \
-	./$(DEPDIR)/server.Po
+	./$(DEPDIR)/server.Po ./$(DEPDIR)/server_internal_test.Po
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -237,9 +238,9 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-DIST_SOURCES = $(libfaketime_la_SOURCES) \
-	$(am__bench_queue_SOURCES_DIST) $(relay_SOURCES) \
-	$(sendmetric_SOURCES) $(test_router_SOURCES)
+DIST_SOURCES = $(libfaketime_la_SOURCES) $(bench_queue_SOURCES) \
+	$(relay_SOURCES) $(sendmetric_SOURCES) $(test_router_SOURCES) \
+	$(test_server_internal_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -433,6 +434,7 @@ SOURCES = \
 	server.c \
 	collector.c \
 	aggregator.c \
+	eventpipe.c \
 	$(NULL)
 
 RELAY_LIBS = $(LIBGZIP) $(LIBLZ4) $(LIBSNAPPY) $(LIBSSL) \
@@ -478,15 +480,17 @@ EXTRA_DIST = \
 
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
-@BENCH_ENABLED_TRUE@bench_queue_SOURCES = queue_bench.c queue.c benchmark.c benchmark_threads.c pthread_barrier.c
-@BENCH_ENABLED_TRUE@bench_queue_LDADD = $(RELAY_LIBS)
+test_server_internal_SOURCES = server_internal_test.c listener_mock.c $(SOURCES)
+test_server_internal_LDADD = $(RELAY_LIBS)
+bench_queue_SOURCES = queue_bench.c queue.c benchmark.c benchmark_threads.c pthread_barrier.c
+bench_queue_LDADD = $(RELAY_LIBS)
 CRTESTS = issue10 issue27 issue117 issue156 issue157 issue163 issue165 \
 	issue180 issue184 issue202 issue213 issue218 issue228 issue235 \
 	issue236 issue246 issue252 issue253 issue263 issue267 issue288 \
 	issue293 issue310 issue357 issue369 server-type reload basic \
 	metriclimits buftest large dual-udp dual-tcp dual-gzip \
 	large-gzip dual-large-gzip dual-lz4 large-lz4 dual-large-lz4 \
-	$(NULL) $(am__append_2)
+	$(NULL) $(am__append_1)
 all: config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-am
 
@@ -662,6 +666,10 @@ test_router$(EXEEXT): $(test_router_OBJECTS) $(test_router_DEPENDENCIES) $(EXTRA
 	@rm -f test_router$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(test_router_OBJECTS) $(test_router_LDADD) $(LIBS)
 
+test_server_internal$(EXEEXT): $(test_server_internal_OBJECTS) $(test_server_internal_DEPENDENCIES) $(EXTRA_test_server_internal_DEPENDENCIES) 
+	@rm -f test_server_internal$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(test_server_internal_OBJECTS) $(test_server_internal_LDADD) $(LIBS)
+
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
 
@@ -677,7 +685,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/conffile.yy.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/consistent-hash.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/dispatcher.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/eventpipe.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/faketime.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/listener_mock.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/md5.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/pthread_barrier.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/queue.Po@am__quote@ # am--include-marker
@@ -688,6 +698,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/router_test.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sendmetric.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/server.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/server_internal_test.Po@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -1052,7 +1063,9 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/conffile.yy.Po
 	-rm -f ./$(DEPDIR)/consistent-hash.Po
 	-rm -f ./$(DEPDIR)/dispatcher.Po
+	-rm -f ./$(DEPDIR)/eventpipe.Po
 	-rm -f ./$(DEPDIR)/faketime.Plo
+	-rm -f ./$(DEPDIR)/listener_mock.Po
 	-rm -f ./$(DEPDIR)/md5.Po
 	-rm -f ./$(DEPDIR)/pthread_barrier.Po
 	-rm -f ./$(DEPDIR)/queue.Po
@@ -1063,6 +1076,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/router_test.Po
 	-rm -f ./$(DEPDIR)/sendmetric.Po
 	-rm -f ./$(DEPDIR)/server.Po
+	-rm -f ./$(DEPDIR)/server_internal_test.Po
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-hdr distclean-libtool distclean-tags
@@ -1120,7 +1134,9 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/conffile.yy.Po
 	-rm -f ./$(DEPDIR)/consistent-hash.Po
 	-rm -f ./$(DEPDIR)/dispatcher.Po
+	-rm -f ./$(DEPDIR)/eventpipe.Po
 	-rm -f ./$(DEPDIR)/faketime.Plo
+	-rm -f ./$(DEPDIR)/listener_mock.Po
 	-rm -f ./$(DEPDIR)/md5.Po
 	-rm -f ./$(DEPDIR)/pthread_barrier.Po
 	-rm -f ./$(DEPDIR)/queue.Po
@@ -1131,6 +1147,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/router_test.Po
 	-rm -f ./$(DEPDIR)/sendmetric.Po
 	-rm -f ./$(DEPDIR)/server.Po
+	-rm -f ./$(DEPDIR)/server_internal_test.Po
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 

@@ -134,55 +134,81 @@ void CTEST_ERR(const char* fmt, ...) CTEST_IMPL_FORMAT_PRINTF(1, 2);  // doesn't
 #define CTEST2_SKIP(sname, tname) CTEST_IMPL_CTEST2(sname, tname, 1)
 
 
-void assert_str(const char* exp, const char* real, const char* caller, int line);
-#define ASSERT_STR(exp, real) assert_str(exp, real, __FILE__, __LINE__)
+void assert_str(const char* exp, const char* real, const char* caller, int line, const char *descr);
+#define ASSERT_STR(exp, real) assert_str(exp, real, __FILE__, __LINE__, NULL)
+#define ASSERT_STR_D(exp, real, descr) assert_str(exp, real, __FILE__, __LINE__, descr)
 
-void assert_wstr(const wchar_t *exp, const wchar_t *real, const char* caller, int line);
-#define ASSERT_WSTR(exp, real) assert_wstr(exp, real, __FILE__, __LINE__)
+void assert_wstr(const wchar_t *exp, const wchar_t *real, const char* caller, int line, const char *descr);
+#define ASSERT_WSTR(exp, real) assert_wstr(exp, real, __FILE__, __LINE__, NULL)
+#define ASSERT_WSTR_D(exp, real) assert_wstr(exp, real, __FILE__, __LINE__, descr)
 
 void assert_data(const unsigned char* exp, size_t expsize,
                  const unsigned char* real, size_t realsize,
-                 const char* caller, int line);
+                 const char* caller, int line, const char *descr);
 #define ASSERT_DATA(exp, expsize, real, realsize) \
-    assert_data(exp, expsize, real, realsize, __FILE__, __LINE__)
+    assert_data(exp, expsize, real, realsize, __FILE__, __LINE__, NULL)
+#define ASSERT_DATA_D(exp, expsize, real, realsize, descr) \
+    assert_data(exp, expsize, real, realsize, __FILE__, __LINE__, descr)
 
-void assert_equal(intmax_t exp, intmax_t real, const char* caller, int line);
-#define ASSERT_EQUAL(exp, real) assert_equal(exp, real, __FILE__, __LINE__)
+void assert_equal(intmax_t exp, intmax_t real, const char* caller, int line, const char *descr);
+#define ASSERT_EQUAL(exp, real) assert_equal(exp, real, __FILE__, __LINE__, NULL)
+#define ASSERT_EQUAL_D(exp, real, descr) assert_equal(exp, real, __FILE__, __LINE__, descr)
 
-void assert_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line);
-#define ASSERT_EQUAL_U(exp, real) assert_equal_u(exp, real, __FILE__, __LINE__)
+void assert_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line, const char *descr);
+#define ASSERT_EQUAL_U(exp, real) assert_equal_u(exp, real, __FILE__, __LINE__, NULL)
+#define ASSERT_EQUAL_U_D(exp, real, descr) assert_equal_u(exp, real, __FILE__, __LINE__, descr)
 
-void assert_not_equal(intmax_t exp, intmax_t real, const char* caller, int line);
-#define ASSERT_NOT_EQUAL(exp, real) assert_not_equal(exp, real, __FILE__, __LINE__)
+void assert_not_equal(intmax_t exp, intmax_t real, const char* caller, int line, const char *descr);
+#define ASSERT_NOT_EQUAL(exp, real) assert_not_equal(exp, real, __FILE__, __LINE__, NULL)
+#define ASSERT_NOT_EQUAL_D(exp, real, descr) assert_not_equal(exp, real, __FILE__, __LINE__, descr)
 
-void assert_not_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line);
-#define ASSERT_NOT_EQUAL_U(exp, real) assert_not_equal_u(exp, real, __FILE__, __LINE__)
+void assert_not_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line, const char *descr);
+#define ASSERT_NOT_EQUAL_U(exp, real) assert_not_equal_u(exp, real, __FILE__, __LINE__, NULL)
+#define ASSERT_NOT_EQUAL_U_D(exp, real, descr) assert_not_equal_u(exp, real, __FILE__, __LINE__, descr)
 
-void assert_interval(intmax_t exp1, intmax_t exp2, intmax_t real, const char* caller, int line);
-#define ASSERT_INTERVAL(exp1, exp2, real) assert_interval(exp1, exp2, real, __FILE__, __LINE__)
+void assert_interval(intmax_t exp1, intmax_t exp2, intmax_t real, const char* caller, int line, const char *descr);
+#define ASSERT_INTERVAL(exp1, exp2, real) assert_interval(exp1, exp2, real, __FILE__, __LINE__, NULL)
+#define ASSERT_INTERVAL_D(exp1, exp2, real, descr) assert_interval(exp1, exp2, real, __FILE__, __LINE__, descr)
 
-void assert_null(void* real, const char* caller, int line);
-#define ASSERT_NULL(real) assert_null((void*)real, __FILE__, __LINE__)
+void assert_null(void* real, const char* caller, int line, const char *descr);
+#define ASSERT_NULL(real) assert_null((void*)real, __FILE__, __LINE__, NULL)
+#define ASSERT_NULL_D(real, descr) assert_null((void*)real, __FILE__, __LINE__, descr)
 
-void assert_not_null(const void* real, const char* caller, int line);
-#define ASSERT_NOT_NULL(real) assert_not_null(real, __FILE__, __LINE__)
+void assert_not_null(const void* real, const char* caller, int line, const char *descr);
+#define ASSERT_NOT_NULL(real) assert_not_null(real, __FILE__, __LINE__, NULL)
+#define ASSERT_NOT_NULL_D(real, descr) assert_not_null(real, __FILE__, __LINE__, descr)
 
-void assert_true(int real, const char* caller, int line);
-#define ASSERT_TRUE(real) assert_true(real, __FILE__, __LINE__)
+void assert_true(int real, const char* caller, int line, const char *descr);
+#define ASSERT_TRUE(real) assert_true(real, __FILE__, __LINE__, NULL)
+#define ASSERT_TRUE_D(real, descr) assert_true(real, __FILE__, __LINE__, descr)
 
-void assert_false(int real, const char* caller, int line);
-#define ASSERT_FALSE(real) assert_false(real, __FILE__, __LINE__)
+void assert_false(int real, const char* caller, int line, const char *descr);
+#define ASSERT_FALSE(real) assert_false(real, __FILE__, __LINE__, NULL)
+#define ASSERT_FALSE_D(real, descr) assert_false(real, __FILE__, __LINE__, descr)
 
-void assert_fail(const char* caller, int line);
-#define ASSERT_FAIL() assert_fail(__FILE__, __LINE__)
+void assert_fail(const char* caller, int line, const char *descr);
+#define ASSERT_FAIL() assert_fail(__FILE__, __LINE__, NULL)
+#define ASSERT_FAIL_D(descr) assert_fail(__FILE__, __LINE__, descr)
+void assert_dbl_near(double exp, double real, double tol, const char* caller, int line, const char *descr);
+#define ASSERT_DBL_NEAR(exp, real) assert_dbl_near(exp, real, 1e-4, __FILE__, __LINE__, NULL)
+#define ASSERT_DBL_NEAR_D(exp, real, descr) assert_dbl_near(exp, real, 1e-4, __FILE__, __LINE__, descr)
+#define ASSERT_DBL_NEAR_TOL(exp, real, tol) assert_dbl_near(exp, real, tol, __FILE__, __LINE__, NULL)
+#define ASSERT_DBL_NEAR_TOL_D(exp, real, tol) assert_dbl_near(exp, real, tol, __FILE__, __LINE__, descr)
 
-void assert_dbl_near(double exp, double real, double tol, const char* caller, int line);
-#define ASSERT_DBL_NEAR(exp, real) assert_dbl_near(exp, real, 1e-4, __FILE__, __LINE__)
-#define ASSERT_DBL_NEAR_TOL(exp, real, tol) assert_dbl_near(exp, real, tol, __FILE__, __LINE__)
+void assert_dbl_far(double exp, double real, double tol, const char* caller, int line, const char *descr);
+#define ASSERT_DBL_FAR(exp, real) assert_dbl_far(exp, real, 1e-4, __FILE__, __LINE__, NULL)
+#define ASSERT_DBL_FAR_D(exp, real, descr) assert_dbl_far(exp, real, 1e-4, __FILE__, __LINE__, descr)
+#define ASSERT_DBL_FAR_TOL(exp, real, tol) assert_dbl_far(exp, real, tol, __FILE__, __LINE__, NULL)
+#define ASSERT_DBL_FAR_TOL_D(exp, real, tol, descr) assert_dbl_far(exp, real, tol, __FILE__, __LINE__, descr)
 
-void assert_dbl_far(double exp, double real, double tol, const char* caller, int line);
-#define ASSERT_DBL_FAR(exp, real) assert_dbl_far(exp, real, 1e-4, __FILE__, __LINE__)
-#define ASSERT_DBL_FAR_TOL(exp, real, tol) assert_dbl_far(exp, real, tol, __FILE__, __LINE__)
+void assert_step(intmax_t n, const char* caller, int line, const char *descr);
+#define ASSERT_STEP(n) assert_step(n, __FILE__, __LINE__, NULL)
+#define ASSERT_STEP_D(n, descr) assert_step(n, __FILE__, __LINE__, descr)
+
+void assert_d(const char* caller, int line, const char *descr);
+#define ASSERT_D(descr) assert_d(__FILE__, __LINE__, descr)
+
+#define ASSERT_FORMAT(fmt, ...) CTEST_ERR(fmt , __VA_ARGS__)
 
 #ifdef CTEST_MAIN
 
@@ -293,68 +319,96 @@ void CTEST_ERR(const char* fmt, ...)
 
 CTEST_IMPL_DIAG_POP()
 
-void assert_str(const char* exp, const char*  real, const char* caller, int line) {
+void assert_str(const char* exp, const char*  real, const char* caller, int line, const char *descr) {
     if ((exp == NULL && real != NULL) ||
         (exp != NULL && real == NULL) ||
         (exp && real && strcmp(exp, real) != 0)) {
-        CTEST_ERR("%s:%d  expected '%s', got '%s'", caller, line, exp, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected '%s', got '%s'", caller, line, exp, real);
+        else
+            CTEST_ERR("%s:%d  expected '%s', got '%s': %s", caller, line, exp, real, descr);
     }
 }
 
-void assert_wstr(const wchar_t *exp, const wchar_t *real, const char* caller, int line) {
+void assert_wstr(const wchar_t *exp, const wchar_t *real, const char* caller, int line, const char *descr) {
     if ((exp == NULL && real != NULL) ||
         (exp != NULL && real == NULL) ||
         (exp && real && wcscmp(exp, real) != 0)) {
-        CTEST_ERR("%s:%d  expected '%ls', got '%ls'", caller, line, exp, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected '%ls', got '%ls'", caller, line, exp, real);
+        else
+            CTEST_ERR("%s:%d  expected '%ls', got '%ls': %s", caller, line, exp, real, descr);
     }
 }
 
 void assert_data(const unsigned char* exp, size_t expsize,
                  const unsigned char* real, size_t realsize,
-                 const char* caller, int line) {
+                 const char* caller, int line, const char *descr) {
     size_t i;
     if (expsize != realsize) {
-        CTEST_ERR("%s:%d  expected %" PRIuMAX " bytes, got %" PRIuMAX, caller, line, (uintmax_t) expsize, (uintmax_t) realsize);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected %" PRIuMAX " bytes, got %" PRIuMAX, caller, line, (uintmax_t) expsize, (uintmax_t) realsize);
+        else
+            CTEST_ERR("%s:%d  expected %" PRIuMAX " bytes, got %" PRIuMAX ": %s", caller, line, (uintmax_t) expsize, (uintmax_t) realsize, descr);
     }
     for (i=0; i<expsize; i++) {
         if (exp[i] != real[i]) {
-            CTEST_ERR("%s:%d expected 0x%02x at offset %" PRIuMAX " got 0x%02x",
-                caller, line, exp[i], (uintmax_t) i, real[i]);
+            if (descr == NULL)
+                CTEST_ERR("%s:%d expected 0x%02x at offset %" PRIuMAX " got 0x%02x",
+                    caller, line, exp[i], (uintmax_t) i, real[i]);
+            else
+                CTEST_ERR("%s:%d expected 0x%02x at offset %" PRIuMAX " got 0x%02x: %s",
+                    caller, line, exp[i], (uintmax_t) i, real[i], descr);
         }
     }
 }
 
-void assert_equal(intmax_t exp, intmax_t real, const char* caller, int line) {
+void assert_equal(intmax_t exp, intmax_t real, const char* caller, int line, const char *descr) {
     if (exp != real) {
-        CTEST_ERR("%s:%d  expected %" PRIdMAX ", got %" PRIdMAX, caller, line, exp, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected %" PRIdMAX ", got %" PRIdMAX, caller, line, exp, real);
+        else
+            CTEST_ERR("%s:%d  expected %" PRIdMAX ", got %" PRIdMAX ": %s", caller, line, exp, real, descr);
     }
 }
 
-void assert_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line) {
+void assert_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line, const char *descr) {
     if (exp != real) {
-        CTEST_ERR("%s:%d  expected %" PRIuMAX ", got %" PRIuMAX, caller, line, exp, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected %" PRIuMAX ", got %" PRIuMAX, caller, line, exp, real);
+        else
+            CTEST_ERR("%s:%d  expected %" PRIuMAX ", got %" PRIuMAX ": %s", caller, line, exp, real, descr);
     }
 }
 
-void assert_not_equal(intmax_t exp, intmax_t real, const char* caller, int line) {
+void assert_not_equal(intmax_t exp, intmax_t real, const char* caller, int line, const char *descr) {
     if ((exp) == (real)) {
-        CTEST_ERR("%s:%d  should not be %" PRIdMAX, caller, line, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  should not be %" PRIdMAX, caller, line, real);
+        else
+            CTEST_ERR("%s:%d  should not be %" PRIdMAX ": %s", caller, line, real, descr);
     }
 }
 
-void assert_not_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line) {
+void assert_not_equal_u(uintmax_t exp, uintmax_t real, const char* caller, int line, const char *descr) {
     if ((exp) == (real)) {
-        CTEST_ERR("%s:%d  should not be %" PRIuMAX, caller, line, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  should not be %" PRIuMAX, caller, line, real);
+        else
+            CTEST_ERR("%s:%d  should not be %" PRIuMAX ": %s", caller, line, real, descr);
     }
 }
 
-void assert_interval(intmax_t exp1, intmax_t exp2, intmax_t real, const char* caller, int line) {
+void assert_interval(intmax_t exp1, intmax_t exp2, intmax_t real, const char* caller, int line, const char *descr) {
     if (real < exp1 || real > exp2) {
-        CTEST_ERR("%s:%d  expected %" PRIdMAX "-%" PRIdMAX ", got %" PRIdMAX, caller, line, exp1, exp2, real);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected %" PRIdMAX "-%" PRIdMAX ", got %" PRIdMAX, caller, line, exp1, exp2, real);
+        else
+            CTEST_ERR("%s:%d  expected %" PRIdMAX "-%" PRIdMAX ", got %" PRIdMAX ": %s", caller, line, exp1, exp2, real, descr);
     }
 }
 
-void assert_dbl_near(double exp, double real, double tol, const char* caller, int line) {
+void assert_dbl_near(double exp, double real, double tol, const char* caller, int line, const char *descr) {
     double diff = exp - real;
     double absdiff = diff;
     /* avoid using fabs and linking with a math lib */
@@ -362,11 +416,14 @@ void assert_dbl_near(double exp, double real, double tol, const char* caller, in
       absdiff *= -1;
     }
     if (absdiff > tol) {
-        CTEST_ERR("%s:%d  expected %0.3e, got %0.3e (diff %0.3e, tol %0.3e)", caller, line, exp, real, diff, tol);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected %0.3e, got %0.3e (diff %0.3e, tol %0.3e)", caller, line, exp, real, diff, tol);
+        else
+            CTEST_ERR("%s:%d  expected %0.3e, got %0.3e (diff %0.3e, tol %0.3e): %s", caller, line, exp, real, diff, tol, descr);
     }
 }
 
-void assert_dbl_far(double exp, double real, double tol, const char* caller, int line) {
+void assert_dbl_far(double exp, double real, double tol, const char* caller, int line, const char *descr) {
     double diff = exp - real;
     double absdiff = diff;
     /* avoid using fabs and linking with a math lib */
@@ -374,38 +431,64 @@ void assert_dbl_far(double exp, double real, double tol, const char* caller, int
       absdiff *= -1;
     }
     if (absdiff <= tol) {
-        CTEST_ERR("%s:%d  expected %0.3e, got %0.3e (diff %0.3e, tol %0.3e)", caller, line, exp, real, diff, tol);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  expected %0.3e, got %0.3e (diff %0.3e, tol %0.3e)", caller, line, exp, real, diff, tol);
+        else
+            CTEST_ERR("%s:%d  expected %0.3e, got %0.3e (diff %0.3e, tol %0.3e): %s", caller, line, exp, real, diff, tol, descr);
     }
 }
 
-void assert_null(void* real, const char* caller, int line) {
+void assert_null(void* real, const char* caller, int line, const char *descr) {
     if ((real) != NULL) {
-        CTEST_ERR("%s:%d  should be NULL", caller, line);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  should be NULL", caller, line);
+        else
+            CTEST_ERR("%s:%d  should be NULL: %s", caller, line, descr);
     }
 }
 
-void assert_not_null(const void* real, const char* caller, int line) {
+void assert_not_null(const void* real, const char* caller, int line, const char *descr) {
     if (real == NULL) {
-        CTEST_ERR("%s:%d  should not be NULL", caller, line);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  should not be NULL", caller, line);
+        else
+            CTEST_ERR("%s:%d  should not be NULL: %s", caller, line, descr);
     }
 }
 
-void assert_true(int real, const char* caller, int line) {
+void assert_true(int real, const char* caller, int line, const char *descr) {
     if ((real) == 0) {
-        CTEST_ERR("%s:%d  should be true", caller, line);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  should be true", caller, line);
     }
 }
 
-void assert_false(int real, const char* caller, int line) {
+void assert_false(int real, const char* caller, int line, const char *descr) {
     if ((real) != 0) {
-        CTEST_ERR("%s:%d  should be false", caller, line);
+        if (descr == NULL)
+            CTEST_ERR("%s:%d  should be false", caller, line);
+        else
+            CTEST_ERR("%s:%d  should be false: %s", caller, line, descr);
     }
 }
 
-void assert_fail(const char* caller, int line) {
-    CTEST_ERR("%s:%d  shouldn't come here", caller, line);
+void assert_fail(const char* caller, int line, const char *descr) {
+    if (descr == NULL)
+        CTEST_ERR("%s:%d  shouldn't come here", caller, line);
+    else
+        CTEST_ERR("%s:%d  shouldn't come here: %s", caller, line, descr);
 }
 
+void assert_step(intmax_t n, const char* caller, int line, const char *descr) {
+    if (descr == NULL)
+        CTEST_ERR("%s:%d at %" PRIdMAX, caller, line, n);
+    else
+        CTEST_ERR("%s:%d at %" PRIdMAX ": %s", caller, line, n, descr);
+}
+
+void assert_d(const char* caller, int line, const char *descr) {
+    CTEST_ERR("%s:%d %s", caller, line, descr);
+}
 
 static int suite_all(struct ctest* t) {
     (void) t; // fix unused parameter warning
