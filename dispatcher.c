@@ -354,7 +354,7 @@ lzread(z_strm *strm, void *buf, size_t sze)
 		strm->hdl.lz4.iloc = 0;
 	} else if (strm->ipos == strm->isize) {
 		logerr("buffer overflow during read of lz4 stream\n");
-		errno = EMSGSIZE;
+		errno = ENOBUFS;
 		return -1;
 	}
 
@@ -407,7 +407,7 @@ lzreadbuf(z_strm *strm, void *buf, size_t sze)
 		 * return a generic code */
 		if (strm->hdl.lz4.iloc == 0 && strm->ipos == strm->isize) {
 			logerr("Error %s reading LZ4 compressed data, input buffer overflow\n", LZ4F_getErrorName(ret));
-			errno = EBADMSG;
+			errno = ENOBUFS;
 		} else if (strm->closing) {
 			logerr("Error %s reading LZ4 compressed data, lost %lu bytes in input buffer\n",
 				   LZ4F_getErrorName(ret), strm->ipos - strm->hdl.lz4.iloc);
