@@ -631,8 +631,6 @@ ac_includes_default="\
 ac_subst_vars='am__EXEEXT_FALSE
 am__EXEEXT_TRUE
 LTLIBOBJS
-BENCH_ENABLED_FALSE
-BENCH_ENABLED_TRUE
 LIBPCRE
 LIBPCRE2
 LIBONIGURUMA
@@ -782,7 +780,6 @@ with_ssl
 with_oniguruma
 with_pcre2
 with_pcre
-with_bench
 '
       ac_precious_vars='build_alias
 host_alias
@@ -1445,7 +1442,6 @@ support ssl encryption for sending/receiving
 use oniguruma regex library
 use pcre2 regex library
 use pcre regex library
-build benchmarks
 
 Some influential environment variables:
   CC          C compiler command
@@ -14504,23 +14500,6 @@ fi
 
 fi
 
-
-# Check whether --with-bench was given.
-if test "${with_bench+set}" = set; then :
-  withval=$with_bench;
-else
-  with_bench=check
-fi
-
- if test "x$with_bench" == xcheck; then
-  BENCH_ENABLED_TRUE=
-  BENCH_ENABLED_FALSE='#'
-else
-  BENCH_ENABLED_TRUE='#'
-  BENCH_ENABLED_FALSE=
-fi
-
-
 ac_config_files="$ac_config_files Makefile"
 
 cat >confcache <<\_ACEOF
@@ -14666,10 +14645,6 @@ Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 if test -z "${SSL_ENABLED_TRUE}" && test -z "${SSL_ENABLED_FALSE}"; then
   as_fn_error $? "conditional \"SSL_ENABLED\" was never defined.
-Usually this means the macro was only invoked conditionally." "$LINENO" 5
-fi
-if test -z "${BENCH_ENABLED_TRUE}" && test -z "${BENCH_ENABLED_FALSE}"; then
-  as_fn_error $? "conditional \"BENCH_ENABLED\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 
