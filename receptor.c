@@ -165,7 +165,9 @@ bindlistenip(listener *lsnr, unsigned int backlog)
 	if (binderr != 0) {
 		/* close all opened sockets */
 		for (--sockcur; sockcur >= 0; sockcur--) {
-			close(lsnr->socks[sockcur].sock);
+			if (lsnr->socks[sockcur].sock != -1) {
+				close(lsnr->socks[sockcur].sock);
+			}
 		}
 		lsnr->socks[0].sock = -1;
 		return 1;
@@ -246,8 +248,11 @@ static void
 close_socks(listener *lsnr)
 {
 	int i;
-	for (i = 0; lsnr->socks[i].sock != -1; i++)
-		close(lsnr->socks[i].sock);
+	for (i = 0; lsnr->socks[i].sock != -1; i++) {
+		if (lsnr->socks[i].sock != -1) {
+			close(lsnr->socks[i].sock);
+		}
+	}
 	logout("closed listener for %s %s:%u\n",
 			lsnr->ctype == CON_UDP ? "udp" : "tcp",
 			lsnr->ip == NULL ? "" : lsnr->ip, lsnr->port);
@@ -256,7 +261,9 @@ close_socks(listener *lsnr)
 static void
 destroy_usock(listener *lsnr)
 {
-	close(lsnr->socks[0].sock);
+	if (lsnr->socks[0].sock != -1) {
+		close(lsnr->socks[0].sock);
+	}
 	unlink(lsnr->ip);
 	logout("removed listener for %s\n", lsnr->ip);
 }
