@@ -107,4 +107,7 @@ col_mode router_getcollectormode(router *r);
 void router_shutdown(router *r);
 void router_free(router *r);
 
+/* run before exit from main, prevent sanitizers memory leak report */
+void router_quoteident_buf_free();
+
 #endif

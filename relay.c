@@ -1091,7 +1091,9 @@ main(int argc, char * const argv[])
 #ifdef HAVE_LIBEVENT_SHUTDOWN
 	/* for prevent sanitizers leak detect */
 	libevent_global_shutdown();
-#endif	
+#endif
+
+	router_quoteident_buf_free();
 
 	if (pidfile != NULL)
 		unlink(pidfile);
