@@ -30,6 +30,7 @@
 #include <signal.h>
 
 #include <event2/thread.h>
+#include <event2/event.h>
 
 #include "router.h"
 #include "server_internal.h"
@@ -47,6 +48,7 @@ int relaylog(enum logdst dest, const char *fmt, ...) {
 
 #define CTEST_MAIN
 #define CTEST_SEGFAULT
+#define CTEST_NOJMP
 
 #include "ctest.h"
 
@@ -77,9 +79,67 @@ static char *ll2str(long long n) {
     return s;
 }
 
+void connect_and_send(server *s, listener_mock *d) {
+    int i;
+    z_strm *strm;
+    const char *err;
+    int ret = server_connect(s);
+    // connection must failed, mock is down state
+    ASSERT_EQUAL_D(-1, ret, "connection must failed");
+
+    ret = listener_mock_set_state(d, DSTATUS_UP);
+    ASSERT_EQUAL(0, ret);
+
+    for (i = 0; i < 30; i++) {
+        usleep(10); /* sleep for wake up event loop thread */
+        if ((ret = server_connect(s)) != -1) {
+            break;
+        }
+    }
+    // connection must successed
+    ASSERT_NOT_EQUAL_D(-1, ret, "connection must successed");
+
+    strm = server_get_strm(s);
+    for (i = 0; i < queuesize; i++) {
+        const char *m = ll2str(i);
+        size_t mlen = strlen(m);
+        ssize_t slen = strm->strmwrite(strm, m, mlen);
+        if (slen == -1 && errno == ENOBUFS) {
+            /* Flush and retry */
+            if (strm->strmflush(strm) == 0) {
+                slen = strm->strmwrite(strm, m, mlen);
+            }
+        }
+        free((void *) m);
+        err = listener_get_err(d);
+        ASSERT_STR_D(NULL, err, "listener error");
+
+        ASSERT_EQUAL_D(mlen, slen, strerror(errno));
+    }
+    ASSERT_EQUAL_D(0, strm->strmflush(strm), strerror(errno));
+
+    usleep(200);
+
+    /* Verify received */
+    for (i = 0; i < queuesize; i++) {
+        const char *m = queue_dequeue(d->q);
+        if (m == NULL) {
+            ASSERT_STEP_D(i, "queue elements count too small");
+        } else {
+            long long n = atoll(m);
+            if (i != n) {
+                ASSERT_EQUAL_D(i, n, "mismatch queue item");
+            }
+            free((void *) m);
+        }
+    }
+    ASSERT_NULL_D(queue_dequeue(d->q), "queue not empthy");
+    ASSERT_EQUAL_D(queuesize, d->metrics, "queue elements count too small");
+}
+
 CTEST_DATA(server_plain_tcp) {
     listener_mock d;
-    const char *ip;
+    char *ip;
     int port;
     con_proto proto;
     con_trnsp transport;
@@ -110,15 +170,8 @@ CTEST_TEARDOWN(server_plain_tcp) {
 }
 
 CTEST2(server_plain_tcp, connect_and_send) {
-    const char *err;
-    int ret;
-    long long i = 0;
-    size_t batchcount;
-    z_strm *strm;
-
     if (data->port == -1) {
-        fprintf(stderr, "dispatcher mock start: %s\n",
-                listener_get_err(&data->d));
+        LOG("dispatcher mock start: %s\n", listener_get_err(&data->d));
         ASSERT_NOT_EQUAL(-1, data->port);
     }
 
@@ -127,70 +180,13 @@ CTEST2(server_plain_tcp, connect_and_send) {
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
-    ret = server_connect(data->s);
-    // connection must failed, mock is down state
-    ASSERT_EQUAL_D(-1, ret, "connection must failed");
-
-    ret = listener_mock_set_state(&data->d, DSTATUS_UP);
-    ASSERT_EQUAL(0, ret);
-
-    for (i = 0; i < 30; i++) {
-        usleep(10); /* sleep for wake up event loop thread */
-        if ((ret = server_connect(data->s)) != -1) {
-            break;
-        }
-    }
-    // connection must successed
-    ASSERT_NOT_EQUAL_D(-1, ret, "connection must successed");
-
-    strm = server_get_strm(data->s);
-    batchcount = 0;
-    for (i = 0; i < queuesize; i++) {
-        const char *m = ll2str(i);
-        size_t mlen = strlen(m);
-        ssize_t slen = 0;
-        if (batchcount >= batchsize) {
-            if (strm->strmflush(strm) < 0) {
-                slen = -1;
-            } else {
-                batchcount = 0;
-            }
-        }
-        if (slen == 0) {
-            slen = strm->strmwrite(strm, m, mlen);
-        }
-        if (slen == -1 && errno == ENOBUFS) {
-            /* Flush and retry */
-            if (strm->strmflush(strm) == 0) {
-                slen = strm->strmwrite(strm, m, mlen);
-            }
-        }
-        batchcount++;
-        err = listener_get_err(&data->d);
-        ASSERT_STR_D(NULL, err, "listener error");
-
-        ASSERT_EQUAL_D(mlen, slen, strerror(errno));
-    }
-    ASSERT_EQUAL_D(0, strm->strmflush(strm), strerror(errno));
-
-    usleep(200);
-
-    /* Verify received */
-    for (i = 0; i < queuesize; i++) {
-        const char *m = queue_dequeue(data->d.q);
-        if (m == NULL) {
-            ASSERT_STEP_D(i, "queue elements count too small");
-        }
-        long long n = atoll(m);
-        ASSERT_EQUAL_D(i, n, "mismatch queue item");
-    }
-    ASSERT_NULL_D(queue_dequeue(data->d.q), "queue not empthy");
+    connect_and_send(data->s, &data->d);
 }
 
 #ifdef HAVE_GZIP
 CTEST_DATA(server_gzip_tcp) {
     listener_mock d;
-    const char *ip;
+    char *ip;
     int port;
     con_proto proto;
     con_trnsp transport;
@@ -221,75 +217,17 @@ CTEST_TEARDOWN(server_gzip_tcp) {
 }
 
 CTEST2(server_gzip_tcp, connect_and_send) {
-    const char *err;
-    int ret;
-    long long i = 0;
-    z_strm *strm;
-
     if (data->port == -1) {
-        fprintf(stderr, "dispatcher mock start: %s\n",
-                listener_get_err(&data->d));
+        LOG("dispatcher mock start: %s\n", listener_get_err(&data->d));
         ASSERT_NOT_EQUAL(-1, data->port);
     }
 
-    data->s = server_new(data->ip, data->port, T_LINEMODE, W_GZIP, data->proto,
-                         data->saddr, data->hint, queuesize, batchsize,
-                         maxstalls, iotimeout, sockbufsize);
+    data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
+                         data->proto, data->saddr, data->hint, queuesize,
+                         batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
-    ret = server_connect(data->s);
-    // connection must failed, mock is down state
-    ASSERT_EQUAL_D(-1, ret, "connection must failed");
-
-    ret = listener_mock_set_state(&data->d, DSTATUS_UP);
-    ASSERT_EQUAL(0, ret);
-
-    for (i = 0; i < 30; i++) {
-        usleep(10); /* sleep for wake up event loop thread */
-        if ((ret = server_connect(data->s)) != -1) {
-            break;
-        }
-    }
-    // connection must successed
-    ASSERT_NOT_EQUAL_D(-1, ret, "connection must successed");
-
-    strm = server_get_strm(data->s);
-    for (i = 0; i < queuesize; i++) {
-        if (i > 100126) {
-            ret = i;
-        }
-        const char *m = ll2str(i);
-        size_t mlen = strlen(m);
-        ssize_t slen = strm->strmwrite(strm, m, mlen);
-        if (slen == -1 && errno == ENOBUFS) {
-            /* Flush and retry */
-            if (strm->strmflush(strm) == 0) {
-                slen = strm->strmwrite(strm, m, mlen);
-            }
-        }
-        err = listener_get_err(&data->d);
-        ASSERT_STR_D(NULL, err, "listener error");
-
-        ASSERT_EQUAL_D(mlen, slen, strerror(errno));
-    }
-    ASSERT_EQUAL_D(0, strm->strmflush(strm), strerror(errno));
-
-    usleep(200);
-
-    /* Verify received */
-    for (i = 0; i < queuesize; i++) {
-        const char *m = queue_dequeue(data->d.q);
-        if (m == NULL) {
-            ASSERT_STEP_D(i, "queue elements count too small");
-        }
-        long long n = atoll(m);
-        if (i != n) {
-            ASSERT_EQUAL_D(i, n, "mismatch queue item");
-        }
-    }
-    ASSERT_NULL_D(queue_dequeue(data->d.q), "queue not empthy");
-    ASSERT_EQUAL_D(queuesize, data->d.metrics,
-                   "queue elements count too small");
+    connect_and_send(data->s, &data->d);
 }
 #endif
 
@@ -306,7 +244,13 @@ CTEST2(server_gzip_tcp, connect_and_send) {
 #endif
 
 int main(int argc, const char *argv[]) {
+    int ret;
     signal(SIGPIPE, SIG_IGN);
     evthread_use_pthreads();
-    return ctest_main(argc, argv);
+    ret = ctest_main(argc, argv);
+#ifdef HAVE_LIBEVENT_SHUTDOWN
+    /* for prevent sanitizers leak detect */
+    libevent_global_shutdown();
+#endif
+    return ret;
 }

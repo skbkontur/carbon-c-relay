@@ -418,6 +418,10 @@ void listener_mock_free(listener_mock *d) {
     if (d->qerr != NULL) {
         queue_destroy(d->qerr);
     }
+
+    if (d->q != NULL) {
+        queue_destroy(d->q);
+    }
 }
 
 const char *listener_get_err(listener_mock *d) {

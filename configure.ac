@@ -116,6 +116,20 @@ found_rtld_next=yes],
 fi
 AC_DEFINE([HAVE_RTLD_NEXT], [$found_rtld_next], [Define if you have RTLD_NEXT])
 
+AC_CHECK_LIB([event], [event_base_loop],
+	[], [AC_MSG_FAILURE([event not found])]
+)
+
+AC_CHECK_LIB([event_pthreads], [libevent_global_shutdown],
+	[AC_DEFINE([HAVE_LIBEVENT_SHUTDOWN], [1], [Define if you have libevent_global_shutdown])], [],
+	[-levent]
+)
+
+AC_CHECK_LIB([event_pthreads], [evthread_use_pthreads],
+	[], [AC_MSG_FAILURE([event_pthreads not found])],
+	[-levent]
+)
+
 AC_ARG_WITH([gzip], [support gzip compression for sending/receiving],
 			[], [with_gzip=check])
 LIBGZIP=

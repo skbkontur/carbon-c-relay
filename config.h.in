@@ -36,6 +36,15 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
+/* Define to 1 if you have the `event' library (-levent). */
+#undef HAVE_LIBEVENT
+
+/* Define to 1 if you have the `event_pthreads' library (-levent_pthreads). */
+#undef HAVE_LIBEVENT_PTHREADS
+
+/* Define if you have libevent_global_shutdown */
+#undef HAVE_LIBEVENT_SHUTDOWN
+
 /* Define to 1 if you have the `localtime_r' function. */
 #undef HAVE_LOCALTIME_R
 

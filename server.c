@@ -1692,6 +1692,7 @@ server_cleanup(server *s) {
 		free(s->strm->nextstrm);
 		free(s->strm);
 	}
+	free((char *)s->ip);
 	s->ip = NULL;
 	free(s->secpos);
 	free((char *)s->ip);
