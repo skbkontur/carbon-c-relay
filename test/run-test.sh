@@ -24,9 +24,18 @@ CNFCLN=( sed -e '/^configuration:/,/^parsed configuration follows:/d'
              -e 's/^\[[0-9][0-9\-]* [0-9][0-9:]*\] //'
              -e 's/_stub_[0-9a-fx][0-9a-fx]*__/_stub_0xc0d3__/')
 
-export DYLD_FORCE_FLAT_NAMESPACE=1
-export DYLD_INSERT_LIBRARIES=../.libs/libfaketime.dylib
-export LD_PRELOAD=../.libs/libfaketime.so
+[ "`uname`" = "Linux" ] && {
+	# Detect libasan for preload library
+	LIBASAN=$( ldd ${EXEC} | grep libasan | awk '{ print $3 }' )
+	if [ "${LIBASAN}" != "" ]; then
+		export LD_PRELOAD="${LIBASAN}"
+		VALGRIND="0"
+	fi
+}
+
+[ "${VALGRIND}" = "1" ] && {
+	EXEC="valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=128 ${EXEC}"
+}
 
 buftest_generate() {
 i=1
@@ -108,12 +117,19 @@ run_configtest() {
 
 	[[ -e ${conf} ]] || conf="../issues/${conf}"
 	echo -n "${test}: "
+	[ "${VALGRIND}" = "1" ] && {
+	tdiff=$(cat ${2} \
+		| ( ${EXEC} ${eflags} -f "${conf}" ; trigger_bash_segv_print=$?) 2>&1 \
+		| "${CNFCLN[@]}" \
+		; exit ${PIPESTATUS[1]})
+	} || {
 	tdiff=$(cat ${2} \
 		| ( ${EXEC} ${eflags} -f "${conf}" ; trigger_bash_segv_print=$?) 2>&1 \
 		| "${CNFCLN[@]}" \
 		| ${DIFF} "${test}.out" - --label "${test}.out" --label "${test}.out" \
 		| ${POST} \
 		; exit ${PIPESTATUS[3]})
+	}
 	if [[ $? == 0 ]] ; then
 		echo "PASS"
 		return 0
@@ -570,10 +586,14 @@ large_ssl_generate
 large_compress_generate
 dual_large_compress_generate
 
-${EXEC} -v | grep -w gzip >/dev/null && HAVE_GZIP=1 || HAVE_GZIP=0
-${EXEC} -v | grep -w lz4 >/dev/null && HAVE_LZ4=1 || HAVE_LZ4=0
-${EXEC} -v | grep -w snappy >/dev/null && HAVE_SNAPPY=1 || HAVE_SNAPPY=0
-${EXEC} -v | grep -w ssl >/dev/null && HAVE_SSL=1 || HAVE_SSL=0
+export DYLD_FORCE_FLAT_NAMESPACE=1
+export DYLD_INSERT_LIBRARIES=../.libs/libfaketime.dylib
+export LD_PRELOAD="${LD_PRELOAD} ../.libs/libfaketime.so"
+
+${EXEC} -v 2>/dev/null | grep -w gzip >/dev/null && HAVE_GZIP=1 || HAVE_GZIP=0
+${EXEC} -v 2>/dev/null | grep -w lz4 >/dev/null && HAVE_LZ4=1 || HAVE_LZ4=0
+${EXEC} -v 2>/dev/null | grep -w snappy >/dev/null && HAVE_SNAPPY=1 || HAVE_SNAPPY=0
+${EXEC} -v 2>/dev/null | grep -w ssl >/dev/null && HAVE_SSL=1 || HAVE_SSL=0
 echo " done"
 
 tstcnt=0
