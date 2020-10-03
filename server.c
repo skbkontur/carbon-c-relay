@@ -1684,10 +1684,8 @@ server_cleanup(server *s) {
 	}
 	free(s->batch);
 	free(s->instance);
-	if (s->saddr != NULL) {
-		freeaddrinfo(s->saddr);
-	}
-	free(s->hint);
+	freeaddrinfo(s->saddr);
+	freeaddrinfo(s->hint);
 	if (s->strm != NULL) {
 		free(s->strm->nextstrm);
 		free(s->strm);
