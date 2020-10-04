@@ -328,14 +328,18 @@ void CTEST_ERR(const char* fmt, ...)
 
 CTEST_IMPL_DIAG_POP()
 
+static const char *null_str(const char *s) {
+    return (s == NULL) ? "(null)" : s;
+}
+
 void assert_str(const char* exp, const char*  real, const char* caller, int line, const char *descr) {
     if ((exp == NULL && real != NULL) ||
         (exp != NULL && real == NULL) ||
         (exp && real && strcmp(exp, real) != 0)) {
         if (descr == NULL)
-            CTEST_ERR("%s:%d  expected '%s', got '%s'", caller, line, exp, real);
+            CTEST_ERR("%s:%d  expected '%s', got '%s'", caller, line, null_str(exp), null_str(real));
         else
-            CTEST_ERR("%s:%d  expected '%s', got '%s': %s", caller, line, exp, real, descr);
+            CTEST_ERR("%s:%d  expected '%s', got '%s': %s", caller, line, null_str(exp), null_str(real), descr);
     }
 }
 
