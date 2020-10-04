@@ -574,7 +574,11 @@ echo "Unit tests"
 for test in ../test_* ; do
 	[ -x "${test}" ] || continue
 	echo "# $( basename ${test} )"
-	${test} || ufail=1
+	[ "${VALGRIND}" = "1" ] && {
+		valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=128 ${test} || ufail=1
+	} || {
+		${test} || ufail=1
+	}
 done
 [ "${ufail}" == "1" ] && exit 1
 
