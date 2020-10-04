@@ -655,9 +655,13 @@ size_t server_metrics_in_buffer(server *s) {
 
 int
 server_disconnect(server *self) {
-	int ret = self->strm->strmclose(self->strm);
-	self->fd = -1;
-	return ret;
+	if (self->fd != -1) {
+		int ret = self->strm->strmclose(self->strm);
+		self->fd = -1;
+		return ret;
+	} else {
+		return 0;
+	}
 }
 
 char server_connect(server *self)
