@@ -133,6 +133,8 @@ void connect_and_send(server *s, listener_mock *d) {
             free((void *) m);
         }
     }
+    server_disconnect(s);
+    listener_mock_stop(d);
     ASSERT_NULL_D(queue_dequeue(d->q), "queue not empthy");
     ASSERT_EQUAL_D(queuesize, d->metrics, "queue elements count too small");
 }
@@ -232,7 +234,51 @@ CTEST2(server_gzip_tcp, connect_and_send) {
 #endif
 
 #ifdef HAVE_LZ4
-/* TODO: implement LZ4 tests */
+CTEST_DATA(server_lz4_tcp) {
+    listener_mock d;
+    char *ip;
+    int port;
+    con_proto proto;
+    con_trnsp transport;
+    struct addrinfo *saddr;
+    struct addrinfo *hint; /* free in server_cleanup */
+    server *s;
+};
+
+CTEST_SETUP(server_lz4_tcp) {
+    data->ip = "127.0.0.1";
+    data->transport = W_LZ4;
+    data->port = listener_mock_init(&data->d, data->ip, 0, CON_TCP,
+                                    data->transport, 1024, queuesize);
+    data->saddr = NULL;
+    data->proto = CON_TCP;
+    data->hint = malloc(sizeof(struct addrinfo));
+    hint_proto(data->hint, data->proto);
+    data->s = NULL;
+}
+
+CTEST_TEARDOWN(server_lz4_tcp) {
+    if (data->s != NULL) {
+        server_disconnect(data->s);
+        server_cleanup(data->s);
+    }
+    listener_mock_stop(&data->d);
+    listener_mock_free(&data->d);
+}
+
+CTEST2(server_lz4_tcp, connect_and_send) {
+    if (data->port == -1) {
+        LOG("dispatcher mock start: %s\n", listener_get_err(&data->d));
+        ASSERT_NOT_EQUAL(-1, data->port);
+    }
+
+    data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
+                         data->proto, data->saddr, data->hint, queuesize,
+                         batchsize, maxstalls, iotimeout, sockbufsize);
+    ASSERT_NOT_NULL(data->s);
+
+    connect_and_send(data->s, &data->d);
+}
 #endif
 
 #ifdef HAVE_SNAPPY
