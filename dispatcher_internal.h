@@ -47,6 +47,7 @@ typedef struct _z_strm {
 	/* read from buffer only func, on error set errno to ENOMEM, EMSGSIZE or EBADMSG */
 	ssize_t (*strmreadbuf)(struct _z_strm *, void *, size_t);
 	int (*strmclose)(struct _z_strm *);
+	const char *(*strmerror)(struct _z_strm *, int);     /* get last err str */
 	union {
 #ifdef HAVE_GZIP
 		struct gz {
@@ -88,6 +89,7 @@ connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
 			#else
 			, void *empthy
 			#endif
+			, char **obuf, size_t *osize
 );
 
 #endif
