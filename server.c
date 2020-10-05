@@ -149,6 +149,13 @@ sockclose(z_strm *strm)
 	return close(strm->hdl.sock);
 }
 
+static void
+sockfree(z_strm *strm)
+{
+	free(strm->obuf);
+	free(strm);
+}
+
 static inline const char *
 sockerror(z_strm *strm, int rval)
 {
@@ -157,12 +164,31 @@ sockerror(z_strm *strm, int rval)
 	return strerror(errno);
 }
 
+/* allocate new connection */
 static int
-socketsetup(server *s) {
+socketnew(server *s, int osize) {
+	s->strm = malloc(sizeof(z_strm));
+	if (s->strm == NULL) {
+		logerr("failed to alloc socket stream: out of memory\n");
+		return -1;
+	}
+	s->strm->obuflen = 0;
+	s->strm->nextstrm = NULL;
+
+	s->strm->obufsize = osize;
+
 	s->strm->strmwrite = &sockwrite;
 	s->strm->strmflush = &sockflush;
 	s->strm->strmclose = &sockclose;
 	s->strm->strmerror = &sockerror;
+	s->strm->strmfree = &sockfree;
+
+	s->strm->obuf = malloc(s->strm->obufsize);
+	if (s->strm->obuf == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc socket stream buffer: out of memory\n");
+		return -1;
+	}
 
 	return 0;
 }
@@ -252,8 +278,16 @@ gzipclose(z_strm *strm)
 {
 	int ret = strm->nextstrm->strmclose(strm->nextstrm);
 	deflateEnd(strm->hdl.gz);
-	free(strm->hdl.gz);
 	return ret;
+}
+
+static inline void
+gzipfree(z_strm *strm)
+{
+	strm->nextstrm->strmfree(strm->nextstrm);
+	free(strm->hdl.gz);
+	free(strm->obuf);
+	free(strm);
 }
 
 static inline const char *
@@ -262,11 +296,12 @@ gziperror(z_strm *strm, int rval)
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
 
-/* setup on server alloc */
+/* alloc on new server */
 static int
-gzipsetup(server *s) {
+gzipnew(server *s, int osize) {
 	z_strm *gzstrm = malloc(sizeof(z_strm));
 	if (gzstrm == NULL) {
+		s->strm->strmfree(s->strm);
 		logerr("failed to alloc gzip stream: out of memory\n");
 		return -1;
 	}
@@ -274,35 +309,46 @@ gzipsetup(server *s) {
 	gzstrm->strmflush = &gzipflush;
 	gzstrm->strmclose = &gzipclose;
 	gzstrm->strmerror = &gziperror;
+	gzstrm->strmfree = &gzipfree;
+	gzstrm->obufsize = osize;
+	gzstrm->obuf = NULL;
 	gzstrm->nextstrm = s->strm;
-	gzstrm->obuflen = 0;
-	gzstrm->hdl.gz = NULL;
+
 	s->strm = gzstrm;
+
+	s->strm->hdl.gz = malloc(sizeof(z_stream));
+	if (s->strm->hdl.gz == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc gzip stream: out of memory\n");
+		return -1;
+	}
+	
+	s->strm->obuf = malloc(s->strm->obufsize);
+	if (s->strm->obuf == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc gzip stream buf: out of memory\n");
+		return -1;
+	}
 
 	return 0;
 }
 
-/* allocation on connect */
+/* setup on connect */
 int
-gzipalloc(z_strm *strm) {
-	strm->hdl.gz = malloc(sizeof(z_stream));
-	if (strm->hdl.gz == NULL) {
-		logerr("failed to alloc gzip stream: out of memory\n");
-		return -1;
-	}
-	strm->hdl.gz->zalloc = Z_NULL;
-	strm->hdl.gz->zfree = Z_NULL;
-	strm->hdl.gz->opaque = Z_NULL;
-	strm->hdl.gz->next_in = Z_NULL;
-	if (deflateInit2(strm->hdl.gz,
+gzipsetup(server *s) {
+	s->strm->obuflen = 0;
+	s->strm->hdl.gz->zalloc = Z_NULL;
+	s->strm->hdl.gz->zfree = Z_NULL;
+	s->strm->hdl.gz->opaque = Z_NULL;
+	s->strm->hdl.gz->next_in = Z_NULL;
+	if (deflateInit2(s->strm->hdl.gz,
 			Z_DEFAULT_COMPRESSION,
 			Z_DEFLATED,
 			15 + 16,
 			8,
 			Z_DEFAULT_STRATEGY) != Z_OK)
 	{
-		free(strm->hdl.gz);
-		logerr("failed to alloc gzip stream: out of memory\n");
+		logerr("failed to setup gzip stream\n");
 		return -1;
 	}
 
@@ -311,6 +357,9 @@ gzipalloc(z_strm *strm) {
 #endif
 
 #ifdef HAVE_LZ4
+
+#include "lz4settings.h"
+
 /* lz4 wrapped socket */
 static inline int lzflush(z_strm *strm);
 
@@ -371,8 +420,16 @@ lzflush(z_strm *strm)
 static inline int
 lzclose(z_strm *strm)
 {
-	free(strm->hdl.z.cbuf);
 	return strm->nextstrm->strmclose(strm->nextstrm);
+}
+
+static void
+lzfree(z_strm *strm)
+{
+	strm->nextstrm->strmfree(strm->nextstrm);	
+	free(strm->hdl.z.cbuf);
+	free(strm->obuf);
+	free(strm);
 }
 
 static inline const char *
@@ -381,34 +438,48 @@ lzerror(z_strm *strm, int rval)
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
 
-/* setup on server alloc */
+/* allocate new connection */
 static int
-lzsetup(server *s) {
+lznew(server *s, int osize) {
 	z_strm *lzstrm = malloc(sizeof(z_strm));
 	if (lzstrm == NULL) {
+		s->strm->strmfree(s->strm);
 		logerr("failed to alloc lz4 stream: out of memory\n");
 		return -1;
 	}
+	lzstrm->obufsize = osize;
 	lzstrm->strmwrite = &lzwrite;
 	lzstrm->strmflush = &lzflush;
 	lzstrm->strmclose = &lzclose;
 	lzstrm->strmerror = &lzerror;
+	lzstrm->strmfree = &lzfree;
 	lzstrm->nextstrm = s->strm;
-	lzstrm->obuflen = 0;
+
 	s->strm = lzstrm;
+
+	s->strm->hdl.z.cbuf = NULL;
+	s->strm->obuf = malloc(s->strm->obufsize);
+	if (s->strm->obuf == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc gzip stream buf: out of memory\n");
+		return -1;
+	}
+
+	/* get the maximum size that should ever be required and allocate for it */
+	s->strm->hdl.z.cbuflen = LZ4F_compressBound(s->strm->obufsize, &lz4f_prefs);
+	if ((s->strm->hdl.z.cbuf = malloc(s->strm->hdl.z.cbuflen)) == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("Failed to allocate %lu bytes for compressed LZ4 data\n", s->strm->hdl.z.cbuflen);
+		return -1;
+	}
 
 	return 0;
 }
 
-/* alloc on connect */
+/* setup on connect */
 int
-lzalloc(z_strm *strm) {
-	/* get the maximum size that should ever be required and allocate for it */
-	strm->hdl.z.cbuflen = LZ4F_compressFrameBound(sizeof(strm->obuf), NULL);
-	if ((strm->hdl.z.cbuf = malloc(strm->hdl.z.cbuflen)) == NULL) {
-		logerr("Failed to allocate %lu bytes for compressed LZ4 data\n", strm->hdl.z.cbuflen);
-		return -1;
-	}
+lzsetup(server *s) {
+	s->strm->obuflen = 0;
 	return 0;
 }
 #endif
@@ -469,16 +540,26 @@ snappyclose(z_strm *strm)
 	return ret;
 }
 
+static void
+snappyfree(z_strm *strm)
+{
+	strm->nextstrm->strmfree(strm->nextstrm);
+	free(strm->obuf);
+	free(strm);
+}
+
 static inline const char *
 snappyerror(z_strm *strm, int rval)
 {
 	return strm->nextstrm->strmerror(strm->nextstrm, rval);
 }
 
+/* allocate new connection */
 static int
-snappysetup(server *s) {
+snappynew(server *s, int osize) {
 	z_strm *snpstrm = malloc(sizeof(z_strm));
 	if (snpstrm == NULL) {
+		s->strm->strmfree(s->strm);
 		logerr("failed to alloc snappy stream: out of memory\n");
 		return -1;
 	}
@@ -486,10 +567,27 @@ snappysetup(server *s) {
 	snpstrm->strmflush = &snappyflush;
 	snpstrm->strmclose = &snappyclose;
 	snpstrm->strmerror = &snappyerror;
+	snpstrm->strmfree = &snappyfree;
 	snpstrm->nextstrm = s->strm;
 	snpstrm->obuflen = 0;
+
 	s->strm = snpstrm;
 
+	s->strm->obufsize = METRIC_BUFSIZ;
+	s->strm->obuf = malloc(s->strm->obufsize);
+	if (s->strm->obuf == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc gzip stream buf: out of memory\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+/* setup on connect */
+int
+snappysetup(server *s) {
+	s->strm->obuflen = 0;
 	return 0;
 }
 #endif
@@ -554,11 +652,20 @@ static inline int
 sslclose(z_strm *strm)
 {
 	int sock = SSL_get_fd(strm->hdl.ssl);
-	SSL_free(strm->hdl.ssl);
 	return close(sock);
 }
 
-static char _sslerror_buf[256];
+static void
+sslfree(z_strm *strm)
+{
+	strm->nextstrm->strmfree(strm->nextstrm);
+	SSL_free(strm->hdl.ssl);
+	SSL_CTX_free(strm->ctx);
+	free(strm->obuf);
+	free(strm);
+}
+
+static  __thread char _sslerror_buf[256];
 static inline const char *
 sslerror(z_strm *strm, int rval)
 {
@@ -608,8 +715,22 @@ sslerror(z_strm *strm, int rval)
 }
 
 static int
-sslsetup(server *s) {
+sslnew(server *s, int osize) {
 	const SSL_METHOD *m = SSLv23_client_method();
+	s->strm = malloc(sizeof(z_strm));
+	if (s->strm == NULL) {
+		logerr("failed to alloc SSL stream: out of memory\n");
+		return -1;
+	}
+	s->strm->strmwrite = &sslwrite;
+	s->strm->strmflush = &sslflush;
+	s->strm->strmclose = &sslclose;
+	s->strm->strmerror = &sslerror;
+	s->strm->strmfree = &sslfree;
+
+	s->strm->nextstrm = NULL;
+	s->strm->obuf = NULL;
+	s->strm->hdl.ssl = NULL;
 	s->strm->ctx = SSL_CTX_new(m);
 
 	if (sslCA != NULL) {
@@ -619,6 +740,7 @@ sslsetup(server *s) {
 											sslCAisdir ? sslCA : NULL) == 0)
 		{
 			char *err = ERR_error_string(ERR_get_error(), NULL);
+			s->strm->strmfree(s->strm);
 			logerr("failed to load SSL verify locations from %s for "
 					"%s:%d: %s\n", sslCA, s->ip, s->port, err);
 			return -1;
@@ -626,10 +748,21 @@ sslsetup(server *s) {
 	}
 	SSL_CTX_set_verify(s->strm->ctx, SSL_VERIFY_PEER, NULL);
 
-	s->strm->strmwrite = &sslwrite;
-	s->strm->strmflush = &sslflush;
-	s->strm->strmclose = &sslclose;
-	s->strm->strmerror = &sslerror;
+	s->strm->hdl.ssl = SSL_new(s->strm->ctx);
+	if (s->strm->hdl.ssl == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc SSL stream: out of memory\n");
+		return -1;
+	}
+
+	s->strm->obufsize = osize;
+
+	s->strm->obuf = malloc(s->strm->obufsize);
+	if (s->strm->obuf == NULL) {
+		s->strm->strmfree(s->strm);
+		logerr("failed to alloc socket stream buffer: out of memory\n");
+		return -1;
+	}
 
 	return 0;
 }
@@ -666,6 +799,10 @@ server_disconnect(server *self) {
 
 char server_connect(server *self)
 {
+#if defined(HAVE_SSL) || defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
+	int compress_type = self->transport & 0xFFFF;
+#endif
+
 	struct timeval timeout;
 	if (self->reresolve) {  /* can only be CON_UDP/CON_TCP */
 		struct addrinfo *saddr;
@@ -893,7 +1030,6 @@ char server_connect(server *self)
 					&self->sockbufsize, sizeof(self->sockbufsize)) != 0)
 			; /* ignore */
 
-	self->strm->obuflen = 0;
 #ifdef SO_NOSIGPIPE
 	if (self->ctype == CON_TCP || self->ctype == CON_UDP) {
 		int enable = 1;
@@ -905,8 +1041,8 @@ char server_connect(server *self)
 #endif
 
 #ifdef HAVE_GZIP
-	if ((self->transport & 0xFFFF) == W_GZIP) {
-		if (gzipalloc(self->strm) == -1) {
+	if (compress_type == W_GZIP) {
+		if (gzipsetup(self) == -1) {
 			__sync_add_and_fetch(&(self->failure), 1);
 			close(self->fd);
 			self->fd = -1;
@@ -915,8 +1051,18 @@ char server_connect(server *self)
 	}
 #endif
 #ifdef HAVE_LZ4
-	if ((self->transport & 0xFFFF) == W_LZ4) {
-		if (lzalloc(self->strm) == -1) {
+	if (compress_type == W_LZ4) {
+		if (lzsetup(self) == -1) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			close(self->fd);
+			self->fd = -1;
+			return -1;
+		}
+	}
+#endif
+#ifdef HAVE_SNAPPY
+	if (compress_type == W_SNAPPY) {
+		if (snappysetup(self) == -1) {
 			__sync_add_and_fetch(&(self->failure), 1);
 			close(self->fd);
 			self->fd = -1;
@@ -929,13 +1075,13 @@ char server_connect(server *self)
 		int rv;
 		z_strm *sstrm;
 
-		if ((self->transport & 0xFFFF) == W_PLAIN) { /* just SSL, nothing else */
+		if (compress_type == W_PLAIN) { /* just SSL, nothing else */
 			sstrm = self->strm;
 		} else {
 			sstrm = self->strm->nextstrm;
 		}
+		sstrm->obuflen = 0;
 
-		sstrm->hdl.ssl = SSL_new(sstrm->ctx);
 		SSL_set_tlsext_host_name(sstrm->hdl.ssl, self->ip);
 		if (SSL_set_fd(sstrm->hdl.ssl, self->fd) == 0) {
 			__sync_add_and_fetch(&(self->failure), 1);
@@ -970,6 +1116,7 @@ char server_connect(server *self)
 			pstrm = self->strm;
 		} else {
 			pstrm = self->strm->nextstrm;
+			pstrm->obuflen = 0;			
 		}
 		pstrm->hdl.sock = self->fd;
 	}
@@ -1420,12 +1567,6 @@ server_new(
 		return NULL;
 	}
 	ret->fd = -1;
-	if ((ret->strm = malloc(sizeof(z_strm))) == NULL) {
-		server_cleanup(ret);
-		return NULL;
-	}
-	ret->strm->obuflen = 0;
-	ret->strm->nextstrm = NULL;
 	ret->queue = queue_new(qsize);
 	if (ret->queue == NULL) {
 		server_cleanup(ret);
@@ -1436,14 +1577,17 @@ server_new(
 #ifdef HAVE_SSL
 	if ((transport & ~0xFFFF) == W_SSL) {
 		/* create an auto-negotiate context */
-		if (sslsetup(ret) == -1) {
+		if (sslnew(ret, METRIC_BUFSIZ) == -1) {
 			server_cleanup(ret);
 			return NULL;
 		}
 	} else
 #endif
 	{
-		(void)socketsetup(ret);
+		if (socketnew(ret, METRIC_BUFSIZ) == -1) {
+			server_cleanup(ret);
+			return NULL;
+		}
 	}
 	
 	/* now see if we have a compressor defined */
@@ -1452,7 +1596,7 @@ server_new(
 	}
 #ifdef HAVE_GZIP
 	else if ((transport & 0xFFFF) == W_GZIP) {
-		if (gzipsetup(ret) == -1) {
+		if (gzipnew(ret, METRIC_BUFSIZ) == -1) {
 			server_cleanup(ret);
 			return NULL;
 		}
@@ -1460,7 +1604,7 @@ server_new(
 #endif
 #ifdef HAVE_LZ4
 	else if ((transport & 0xFFFF) == W_LZ4) {
-		if (lzsetup(ret) == -1) {
+		if (lznew(ret, METRIC_BUFSIZ) == -1) {
 			server_cleanup(ret);
 			return NULL;
 		}
@@ -1468,7 +1612,7 @@ server_new(
 #endif
 #ifdef HAVE_SNAPPY
 	else if ((transport & 0xFFFF) == W_SNAPPY) {
-		if (snappysetup(ret) == -1) {
+		if (snappynew(ret, METRIC_BUFSIZ) == -1) {
 			server_cleanup(ret);
 			return NULL;
 		}
@@ -1691,8 +1835,7 @@ server_cleanup(server *s) {
 	freeaddrinfo(s->saddr);
 	freeaddrinfo(s->hint);
 	if (s->strm != NULL) {
-		free(s->strm->nextstrm);
-		free(s->strm);
+		s->strm->strmfree(s->strm);
 	}
 	free((char *)s->ip);
 	s->ip = NULL;

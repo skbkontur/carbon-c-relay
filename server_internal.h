@@ -39,9 +39,11 @@ typedef struct _z_strm {
 	ssize_t (*strmwrite)(struct _z_strm *, const void *, size_t);
 	int (*strmflush)(struct _z_strm *);
 	int (*strmclose)(struct _z_strm *);
+	void (*strmfree)(struct _z_strm *);
 	const char *(*strmerror)(struct _z_strm *, int);     /* get last err str */
 	struct _z_strm *nextstrm;                            /* set when chained */
-	char obuf[METRIC_BUFSIZ];
+	char *obuf;
+	int obufsize;
 	int obuflen;
 #ifdef HAVE_SSL
 	SSL_CTX *ctx;
