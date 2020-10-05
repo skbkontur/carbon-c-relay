@@ -42,7 +42,8 @@ typedef struct _listener_mock listener_mock;
 typedef struct _conn {
     struct event *ev;
     z_strm *strm;
-    char buf[METRIC_BUFSIZ];
+    char *buf;
+    size_t bufsize;
     size_t buflen;
     char *state;
     queue *q;

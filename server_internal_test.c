@@ -48,7 +48,6 @@ int relaylog(enum logdst dest, const char *fmt, ...) {
 
 #define CTEST_MAIN
 #define CTEST_SEGFAULT
-#define CTEST_NOJMP
 
 #include "ctest.h"
 
@@ -97,7 +96,11 @@ void connect_and_send(server *s, listener_mock *d) {
         }
     }
     // connection must successed
-    ASSERT_NOT_EQUAL_D(-1, ret, "connection must successed");
+    if (ret == -1) {
+        err = listener_get_err(d);
+        LOG("%s: listener error", err);
+        ASSERT_FAIL_D("connection must successed");
+    }
 
     strm = server_get_strm(s);
     for (i = 0; i < queuesize; i++) {
@@ -233,7 +236,7 @@ CTEST2(server_gzip_tcp, connect_and_send) {
 }
 #endif
 
-#ifdef HAVE_LZ4
+#ifdef HAVE_LZ4_BAD_SOMETIMES_NO_BUFFER_SPACE_AVAIL
 CTEST_DATA(server_lz4_tcp) {
     listener_mock d;
     char *ip;
@@ -285,8 +288,52 @@ CTEST2(server_lz4_tcp, connect_and_send) {
 /* snappy implementation was buggy, not tested */
 #endif
 
-#ifdef HAVE_SSL
-/* TODO: implement SSL tests */
+#ifdef HAVE_SSL_BAD
+CTEST_DATA(server_ssl_tcp) {
+    listener_mock d;
+    char *ip;
+    int port;
+    con_proto proto;
+    con_trnsp transport;
+    struct addrinfo *saddr;
+    struct addrinfo *hint; /* free in server_cleanup */
+    server *s;
+};
+
+CTEST_SETUP(server_ssl_tcp) {
+    data->ip = "127.0.0.1";
+    data->transport = W_SSL | W_PLAIN;
+    data->port = listener_mock_init(&data->d, data->ip, 0, CON_TCP,
+                                    data->transport, 1024, queuesize);
+    data->saddr = NULL;
+    data->proto = CON_TCP;
+    data->hint = malloc(sizeof(struct addrinfo));
+    hint_proto(data->hint, data->proto);
+    data->s = NULL;
+}
+
+CTEST_TEARDOWN(server_ssl_tcp) {
+    if (data->s != NULL) {
+        server_disconnect(data->s);
+        server_cleanup(data->s);
+    }
+    listener_mock_stop(&data->d);
+    listener_mock_free(&data->d);
+}
+
+CTEST2(server_ssl_tcp, connect_and_send) {
+    if (data->port == -1) {
+        LOG("dispatcher mock start: %s\n", listener_get_err(&data->d));
+        ASSERT_NOT_EQUAL(-1, data->port);
+    }
+
+    data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
+                         data->proto, data->saddr, data->hint, queuesize,
+                         batchsize, maxstalls, iotimeout, sockbufsize);
+    ASSERT_NOT_NULL(data->s);
+
+    connect_and_send(data->s, &data->d);
+}
 #endif
 
 int main(int argc, const char *argv[]) {

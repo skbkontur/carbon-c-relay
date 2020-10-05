@@ -229,9 +229,7 @@ static char* ctest_errormsg;
 #define MSG_SIZE 4096
 static int ctest_num_fail = 0;
 static char ctest_errorbuffer[MSG_SIZE];
-#ifndef CTEST_NOJMP
 static jmp_buf ctest_err;
-#endif
 static int color_output = 1;
 static const char* suite_name;
 
@@ -319,11 +317,7 @@ void CTEST_ERR(const char* fmt, ...)
     va_end(argp);
 
     msg_end();
-#ifndef CTEST_NOJMP
     longjmp(ctest_err, 1);
-#else
-    ctest_num_fail++;
-#endif
 }
 
 CTEST_IMPL_DIAG_POP()
@@ -603,35 +597,21 @@ __attribute__((no_sanitize_address)) int ctest_main(int argc, const char *argv[]
                 color_print(ANSI_BYELLOW, "[SKIPPED]");
                 num_skip++;
             } else {
-#ifndef CTEST_NOJMP
                 int result = setjmp(ctest_err);
                 if (result == 0)
-#endif
                 {
-#ifdef CTEST_NOJMP
-                    int prev_fails = ctest_num_fail;
-#endif
                     if (test->setup && *test->setup) (*test->setup)(test->data);
                     if (test->data)
                         test->run(test->data);
                     else
                         test->run();
-#ifdef CTEST_NOJMP
-                    if (prev_fails == ctest_num_fail) {
-                      color_print(ANSI_BGREEN, "[OK]");
-                    } else {
-                        color_print(ANSI_BRED, "[FAIL]");
-                    }
-#endif
                     if (test->teardown && *test->teardown) (*test->teardown)(test->data);
-#ifndef CTEST_NOJMP                    
                     // if we got here it's ok
                     color_print(ANSI_BGREEN, "[OK]");
                     num_ok++;
                 } else {
                     color_print(ANSI_BRED, "[FAIL]");
                     ctest_num_fail++;
-#endif                    
                 }
                 if (ctest_errorsize != MSG_SIZE-1) printf("%s", ctest_errorbuffer);
             }

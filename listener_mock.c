@@ -51,6 +51,9 @@
 static char srcaddr[24]; /* only for udp socket dispatcher internal
                             compability, not used in tests */
 
+#ifdef HAVE_SSL
+static const char *pemcert = "test/buftest.ssl.cert";
+#endif
 static char *_strndup(const char *s, size_t n) {
     char *d = malloc(n + 1);
     if (d) {
@@ -69,6 +72,7 @@ static void connclose(conn *c) {
     if (c->strm != NULL) {
         c->strm->strmclose(c->strm);
         c->strm = NULL;
+        free(c->buf);
     }
 }
 
@@ -109,7 +113,7 @@ static ssize_t connread(conn *c) {
         connclose(c);
         return 0;
     }
-    bufsize = (sizeof(c->buf) - 1) - c->buflen;
+    bufsize = (c->bufsize - 1) - c->buflen;
     if (bufsize > 0) {
         char closed = 0;
         len = c->strm->strmread(c->strm, c->buf + c->buflen, bufsize);
@@ -120,12 +124,12 @@ static ssize_t connread(conn *c) {
             closed = 1;
         } else if (len == -1 && (errno != EINTR && errno != EAGAIN &&
                                  errno != EWOULDBLOCK)) {
-            queue_enqueue(c->qerr, strdup(strerror(errno)));
+            queue_enqueue(c->qerr, strdup(c->strm->strmerror(c->strm, len)));
             closed = 1;
         }
         if (c->strm->strmreadbuf != NULL) {
             while (1) {
-                bufsize = (sizeof(c->buf) - 1) - c->buflen;
+                bufsize = (c->bufsize - 1) - c->buflen;
                 if ((len = c->strm->strmreadbuf(c->strm, c->buf + c->buflen,
                                                 bufsize)) < 1) {
                     break;
@@ -188,7 +192,7 @@ static void listener_accept_cb(int fd, short flags, void *arg) {
         }
         if (d->conns[client].strm == NULL) {
             d->conns[client].strm =
-                connectionnew(client, srcaddr, d->ctype, d->transport, d->ctx);
+                connectionnew(client, srcaddr, d->ctype, d->transport, d->ctx, &d->conns[client].buf, &d->conns[client].bufsize);
             if (d->conns[client].strm == NULL) {
                 queue_enqueue(d->qerr, strdup("error allocation connection"));
                 close(client);
@@ -261,9 +265,51 @@ int listener_mock_init(listener_mock *d, const char *ip, int port,
     d->running = 0;
     d->lsnr = -1;
     d->metrics = 0;
+    d->evbase = NULL;
+    d->ev = NULL;
+    d->conns = NULL;
+    d->connsize = 0;
+    d->q = NULL;
     d->qerr = queue_new(24);
     d->ctype = ctype;
     d->transport = transport;
+    d->ctx = NULL;
+
+#ifdef HAVE_SSL
+    if ((d->transport & ~0xFFFF) == W_SSL) {
+        const SSL_METHOD *m = SSLv23_server_method();
+		d->ctx = SSL_CTX_new(m);
+		if (d->ctx == NULL) {
+            queue_enqueue(d->qerr, strdup(strerror(errno)));
+            return -1;
+        }
+        /* load certificates */
+		if (SSL_CTX_use_certificate_file(
+					d->ctx, pemcert, SSL_FILETYPE_PEM) <= 0)
+		{
+			char *err = ERR_error_string(ERR_get_error(), NULL);
+            queue_enqueue(d->qerr, strdup(err));
+			return -1;
+		}
+		if (SSL_CTX_use_PrivateKey_file(
+					d->ctx, pemcert, SSL_FILETYPE_PEM) <= 0)
+		{
+			char *err = ERR_error_string(ERR_get_error(), NULL);
+			queue_enqueue(d->qerr, strdup(err));
+			return -1;
+		}
+		if (!SSL_CTX_check_private_key(d->ctx)) {
+			char *err = ERR_error_string(ERR_get_error(), NULL);
+            queue_enqueue(d->qerr, strdup(err));
+			return -1;
+		}
+
+    } else {
+        d->ctx = NULL;
+    }
+#else
+    d->ctx = NULL;
+#endif    
 
     d->state = DSTATUS_DOWN;
     switch (ctype) {
@@ -400,6 +446,11 @@ void listener_mock_free(listener_mock *d) {
         }
         close(d->lsnr);
     }
+#ifdef HAVE_SSL
+    if ((d->transport & ~0xFFFF) == W_SSL) {
+        SSL_CTX_free(d->ctx);
+    }
+#endif
     if (d->conns != NULL) {
         size_t i;
         for (i = 0; i < d->connsize; i++) {
