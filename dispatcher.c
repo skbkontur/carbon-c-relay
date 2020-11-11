@@ -1713,13 +1713,13 @@ dispatch_new(
 	}
 
 	if ((ret->evbase = event_base_new()) == NULL) {
-		queue_free(ret->notify_queue);
+		queue_destroy(ret->notify_queue);
 		free(ret);
 		return NULL;
 	}
 
 	if (eventpipe_init(&ret->notify_fd) == -1) {
-		queue_free(ret->notify_queue);
+		queue_destroy(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
@@ -1729,7 +1729,7 @@ dispatch_new(
 		          EV_READ | EV_PERSIST, dispatch_cmd_cb, (void*) ret);
 	if (ret->notify_ev == NULL) {
 		eventpipe_close(&ret->notify_fd);
-		queue_free(ret->notify_queue);
+		queue_destroy(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
