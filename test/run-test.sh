@@ -487,6 +487,7 @@ run_reloadtest() {
 				break
 			}
 		done
+		sleep 1 # TODO: refactor server code (can lost last messaged during reload) and remove timeout
 		[ "${reload_ret}" == "1" ] && echo FAIL
 
 		[ "${reload_ret}" == "0" ] && {
