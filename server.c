@@ -1139,6 +1139,8 @@ static inline int server_secpos_alloc(server *self)
 
 static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shutdown)
 {
+	int ret;
+	struct pollfd ufd;
 	size_t len;
 	ssize_t slen;
 	const char **p;
@@ -1298,6 +1300,26 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		if (server_connect(self) == -1) {
 			return -1;
 		}
+	}
+
+	/* check for write ready 
+	 * TODO: replace with poll on serveral servers fd in cluster threads for reduce cpu usage */
+	ufd.fd = self->fd;
+	ufd.events = POLLOUT;
+	ret = poll(&ufd, 1, 10000);
+	if (ret == 0) {
+		/* timeout */
+		logerr("failed to write %s:%u, server timeout\n", self->ip, self->port);
+		server_disconnect(self);
+	} else if (ret == -1) {
+		logerr("failed to write %s:%u, server poll error: %s\n", self->ip, self->port, strerror(errno));
+		server_disconnect(self);
+	} else if (ufd.revents & POLLHUP) {
+		logerr("failed to write %s:%u, server connection hungup\n", self->ip, self->port);
+		server_disconnect(self);
+	} else if (!(ufd.revents & POLLOUT)) {
+		logerr("failed to write %s:%u, server poll revents: %d\n", self->ip, self->port, ufd.revents);
+		server_disconnect(self);
 	}
 
 	/* send up to batch size */
