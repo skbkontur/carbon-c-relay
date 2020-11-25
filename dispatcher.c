@@ -51,7 +51,6 @@ enum conntype {
 #define MAX_LISTENERS 32  /* hopefully enough */
 #define POLL_TIMEOUT  100
 #define IDLE_DISCONNECT_TIME (10 * 60)  /* 10 minutes */
-#define CMD_QUEUE_SIZE 20
 
 /* connection takenby */
 #define C_SETUP -2 /* being setup */
@@ -63,7 +62,6 @@ struct _dispatcher {
 	struct event_base *evbase;
 	struct event *notify_ev; /* not used now, libevent initialized with ptheads locks */
 	eventpipe notify_fd;
-	queue *notify_queue;
 	pthread_t tid;
 	enum conntype type;
 	char id;
@@ -111,13 +109,6 @@ struct _connection {
 	char isaggr:1;
 	char isudp:1;
 };
-
-#define EV_CMD_SHUTDOWN     0
-#define EV_CMD_RELOAD       1
-#define EV_CMD_LADD         2
-#define EV_CMD_LREMOVE      3
-#define EV_CMD_LTRANSPLANT  4
-#define EV_CMD_READ         5
 
 typedef struct _transplantlistener {
 	listener *olsnr;
@@ -800,15 +791,6 @@ static int dispatch_connection(connection *conn, dispatcher *self, struct timeva
 static int
 dispatch_shutdown(dispatcher *d)
 {
-	// int cmd = EV_CMD_SHUTDOWN;
-	// if (write(eventpipe_wd(&d->notify_fd), &cmd, sizeof(cmd)) == -1) {
-	// 	logerr("event_base shutdown write failed, switch to event_base_loopexit failed!\n");
-	// 	if (event_base_loopexit(d->evbase, NULL) == -1) {
-	// 		logerr("event_base_loopexit failed!\n");
-	// 		abort();
-	// 	}
-	// }
-
 	/* libevent initialized with pthreads locks */
 	if (event_base_loopexit(d->evbase, NULL) == -1) {
 			logerr("event_base_loopexit failed!\n");
@@ -1707,19 +1689,13 @@ dispatch_new(
 
 	if (ret == NULL)
 		return NULL;
-	if ((ret->notify_queue = queue_new(CMD_QUEUE_SIZE)) == NULL) {
-		free(ret);
-		return NULL;
-	}
 
 	if ((ret->evbase = event_base_new()) == NULL) {
-		queue_destroy(ret->notify_queue);
 		free(ret);
 		return NULL;
 	}
 
 	if (eventpipe_init(&ret->notify_fd) == -1) {
-		queue_destroy(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
@@ -1729,7 +1705,6 @@ dispatch_new(
 		          EV_READ | EV_PERSIST, dispatch_cmd_cb, (void*) ret);
 	if (ret->notify_ev == NULL) {
 		eventpipe_close(&ret->notify_fd);
-		queue_destroy(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
@@ -1906,7 +1881,6 @@ dispatch_wait_shutdown_byid(unsigned char id)
 void
 dispatch_free(dispatcher *d)
 {
-	queue_destroy(d->notify_queue);
 	event_free(d->notify_ev);
 	event_base_free(d->evbase);
 	eventpipe_close(&d->notify_fd);
