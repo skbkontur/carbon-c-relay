@@ -111,6 +111,8 @@ void connect_and_send(server *s, listener_mock *d) {
             /* Flush and retry */
             if (strm->strmflush(strm) == 0) {
                 slen = strm->strmwrite(strm, m, mlen);
+            } else {
+                ASSERT_FORMAT("strmflush error: %s", strerror(errno));
             }
         }
         free((void *) m);
@@ -121,7 +123,14 @@ void connect_and_send(server *s, listener_mock *d) {
     }
     ASSERT_EQUAL_D(0, strm->strmflush(strm), strerror(errno));
 
-    usleep(200);
+    for (i = 0; i < 8; i++) {
+        /* delay loop for tests under valgring */
+        usleep(100);
+        if (queue_len(d->q) >= queuesize) {
+            break;
+        }
+    }
+    ASSERT_EQUAL_D(queuesize, queue_len(d->q), "queue elements too small");
 
     /* Verify received */
     for (i = 0; i < queuesize; i++) {
@@ -139,7 +148,8 @@ void connect_and_send(server *s, listener_mock *d) {
     server_disconnect(s);
     listener_mock_stop(d);
     ASSERT_NULL_D(queue_dequeue(d->q), "queue not empthy");
-    ASSERT_EQUAL_D(queuesize, d->metrics, "queue elements count too small");
+    ASSERT_EQUAL_D(queuesize, i, "dequeue loop ended too early");
+    ASSERT_EQUAL_D(queuesize, d->metrics, "queue elements received count too small");
 }
 
 CTEST_DATA(server_plain_tcp) {
