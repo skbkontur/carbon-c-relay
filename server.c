@@ -1123,6 +1123,11 @@ char server_connect(server *self)
 	return self->fd;
 }
 
+queue *server_queue(server *s)
+{
+	return s->queue;
+}
+
 static inline int server_secpos_alloc(server *self)
 {
 	int i;
