@@ -52,7 +52,8 @@ static char srcaddr[24]; /* only for udp socket dispatcher internal
                             compability, not used in tests */
 
 #ifdef HAVE_SSL
-static const char *pemcert = "test/buftest.ssl.cert";
+extern char *pemcert;
+char *pemcert = NULL;
 #endif
 static char *_strndup(const char *s, size_t n) {
     char *d = malloc(n + 1);
@@ -157,16 +158,18 @@ static void listener_read_cb(int fd, short flags, void *arg) {
     if (flags & EV_TIMEOUT) {
         queue_enqueue(c->qerr, strdup("dispatch: read timeout on socket"));
         connclose(c);
-    } else {
+    } else if (*c->state == DSTATUS_UP) {
         ssize_t read = connread(c);
         if (read < 0 && errno == ENOBUFS) {
             queue_enqueue(c->qerr, strdup("too long message on socket"));
             connclose(c);
-            return;
         } else if (read > 0) {
             c->d->metrics += read;
         }
+    } else if (*c->state != DSTATUS_DELAY) {
+        connclose(c);
     }
+    return;
 }
 
 static void listener_accept_cb(int fd, short flags, void *arg) {

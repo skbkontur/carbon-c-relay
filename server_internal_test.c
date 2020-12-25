@@ -28,6 +28,8 @@
 
 #include <errno.h>
 #include <signal.h>
+#include <libgen.h>
+#include <unistd.h>
 
 #include <event2/thread.h>
 #include <event2/event.h>
@@ -55,6 +57,7 @@ char relay_hostname[256];
 #ifdef HAVE_SSL
 char *sslCA = NULL;
 char sslCAisdir = 0;
+extern char *pemcert;
 #endif
 
 unsigned char mode = 0;
@@ -65,28 +68,30 @@ static unsigned short iotimeout = 600;
 static int sockbufsize = 0;
 
 char server_connect(server *s);
+int server_poll(server *s);
 int server_disconnect(server *s);
 void server_cleanup(server *s);
 
 z_strm *server_get_strm(server *s);
 
-static char *ll2str(long long n) {
+static char *metricll(long long n) {
     char *s = malloc(256);
     if (s != NULL) {
-        snprintf(s, 256, "%lld\n", n);
+        snprintf(s, 256, "%lld.test %lld %lld\n", n, n, n);
     }
     return s;
 }
 
-void connect_and_send(server *s, listener_mock *d) {
+void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
     int i;
     z_strm *strm;
     const char *err;
+    int state = DSTATUS_UP;
     int ret = server_connect(s);
     // connection must failed, mock is down state
     ASSERT_EQUAL_D(-1, ret, "connection must failed");
 
-    ret = listener_mock_set_state(d, DSTATUS_UP);
+    ret = listener_mock_set_state(d, state);
     ASSERT_EQUAL(0, ret);
 
     for (i = 0; i < 30; i++) {
@@ -95,20 +100,38 @@ void connect_and_send(server *s, listener_mock *d) {
             break;
         }
     }
+    strm = server_get_strm(s);
+
     // connection must successed
     if (ret == -1) {
         err = listener_get_err(d);
         LOG("%s: listener error", err);
-        ASSERT_FAIL_D("connection must successed");
+        ASSERT_FORMAT("connection must successed: %s", strm->strmerror(strm, 0));
     }
 
-    strm = server_get_strm(s);
     for (i = 0; i < queuesize; i++) {
-        const char *m = ll2str(i);
+        const char *m = metricll(i);
         size_t mlen = strlen(m);
         ssize_t slen = strm->strmwrite(strm, m, mlen);
         if (slen == -1 && errno == ENOBUFS) {
             /* Flush and retry */
+            if (repeat_delay) {
+                if (state == DSTATUS_UP) {
+                    state = DSTATUS_DELAY;
+                    ASSERT_EQUAL(0, listener_mock_set_state(d, state));
+                }
+                ret = strm->strmflush(strm);
+                if (ret == -1) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        state = DSTATUS_UP;
+                        ASSERT_EQUAL(0, listener_mock_set_state(d, state));
+                        ASSERT_EQUAL_D(1, server_poll(s), "poll");
+                    } else {
+                        ASSERT_FORMAT("%s\n", strerror(errno));
+                    }
+                }
+            }
+
             if (strm->strmflush(strm) == 0) {
                 slen = strm->strmwrite(strm, m, mlen);
             } else {
@@ -121,9 +144,16 @@ void connect_and_send(server *s, listener_mock *d) {
 
         ASSERT_EQUAL_D(mlen, slen, strerror(errno));
     }
+    if (repeat_delay) {
+        if (state == DSTATUS_DELAY) {
+            state = DSTATUS_UP;
+            ASSERT_EQUAL(0, listener_mock_set_state(d, state));
+        }
+    }
     ASSERT_EQUAL_D(0, strm->strmflush(strm), strerror(errno));
 
-    for (i = 0; i < 8; i++) {
+    sleep(1);
+    for (i = 0; i < 20; i++) {
         /* delay loop for tests under valgring */
         usleep(100);
         if (queue_len(d->q) >= queuesize) {
@@ -138,13 +168,13 @@ void connect_and_send(server *s, listener_mock *d) {
         if (m == NULL) {
             ASSERT_STEP_D(i, "queue elements count too small");
         } else {
-            long long n = atoll(m);
-            if (i != n) {
-                ASSERT_EQUAL_D(i, n, "mismatch queue item");
-            }
+            char *m_cmp = metricll(i);
+            ASSERT_STR_D(m_cmp, m, "mismatch queue item");
             free((void *) m);
+            free((void *) m_cmp);
         }
     }
+
     server_disconnect(s);
     listener_mock_stop(d);
     ASSERT_NULL_D(queue_dequeue(d->q), "queue not empthy");
@@ -195,7 +225,7 @@ CTEST2(server_plain_tcp, connect_and_send) {
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
-    connect_and_send(data->s, &data->d);
+    connect_and_send(data->s, &data->d, 1);
 }
 
 #ifdef HAVE_GZIP
@@ -242,7 +272,7 @@ CTEST2(server_gzip_tcp, connect_and_send) {
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
-    connect_and_send(data->s, &data->d);
+    connect_and_send(data->s, &data->d, 1);
 }
 #endif
 
@@ -290,7 +320,7 @@ CTEST2(server_lz4_tcp, connect_and_send) {
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
-    connect_and_send(data->s, &data->d);
+    connect_and_send(data->s, &data->d, 1);
 }
 #endif
 
@@ -298,7 +328,7 @@ CTEST2(server_lz4_tcp, connect_and_send) {
 /* snappy implementation was buggy, not tested */
 #endif
 
-#ifdef HAVE_SSL_BAD
+#ifdef HAVE_SSL_DISABLED
 CTEST_DATA(server_ssl_tcp) {
     listener_mock d;
     char *ip;
@@ -342,12 +372,22 @@ CTEST2(server_ssl_tcp, connect_and_send) {
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
-    connect_and_send(data->s, &data->d);
+    connect_and_send(data->s, &data->d, 1);
 }
 #endif
 
 int main(int argc, const char *argv[]) {
     int ret;
+#ifdef HAVE_SSL
+    char *dir = dirname(__FILE__);
+    char cur_dir[256];
+    if (strcmp(dir, ".") == 0) {
+        getcwd(cur_dir, sizeof(cur_dir));
+        dir = cur_dir;
+    }
+    pemcert = malloc(strlen(dir) + 25);    
+    sprintf(pemcert, "%s/%s", dir, "test/buftest.ssl.cert");
+#endif    
     signal(SIGPIPE, SIG_IGN);
     evthread_use_pthreads();
     ret = ctest_main(argc, argv);

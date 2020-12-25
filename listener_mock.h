@@ -45,7 +45,7 @@ typedef struct _conn {
     char *buf;
     size_t bufsize;
     size_t buflen;
-    char *state;
+    int *state;
     queue *q;
     queue *qerr;
     listener_mock *d;
@@ -62,7 +62,7 @@ struct _listener_mock {
     size_t connsize;
     size_t metrics;
     char running;
-    char state;
+    int state;
     queue *qerr;
     const char *ip;
     int port;

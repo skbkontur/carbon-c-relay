@@ -120,8 +120,8 @@ sockflush(z_strm *strm)
 	int cnt;
 	if (strm->obuflen == 0)
 		return 0;
-	p = strm->obuf;
-	len = strm->obuflen;
+	p = strm->obuf + strm->obufpos;
+	len = strm->obuflen - strm->obufpos;
 	/* Flush stream, this may not succeed completely due
 	 * to flow control and whatnot, which the docs suggest need
 	 * resuming to complete.  So, use a loop, but to avoid
@@ -132,14 +132,18 @@ sockflush(z_strm *strm)
 			if (slen >= 0) {
 				p += slen;
 				len -= slen;
-			} else if (errno != EINTR)
+			} else if (errno != EINTR) {
+				strm->obufpos = p - strm->obuf;
 				return -1;
+			}
 		} else {
+			strm->obufpos = 0;
 			strm->obuflen = 0;
 			return 0;
 		}
 	}
-
+	/* so slow, throttle */
+	errno = EAGAIN;
 	return -1;
 }
 
@@ -172,6 +176,7 @@ socketnew(server *s, int osize) {
 		logerr("failed to alloc socket stream: out of memory\n");
 		return -1;
 	}
+	s->strm->obufpos = 0;
 	s->strm->obuflen = 0;
 	s->strm->nextstrm = NULL;
 
@@ -222,6 +227,13 @@ gzipflush(z_strm *strm)
 	size_t cbuflen;
 	char *cbufp;
 	int oret;
+
+	/* for non-blocking mode */
+	if (strm->nextstrm->strmflush(strm->nextstrm) < 0)
+		return -1;
+
+	if (strm->obuflen == 0)
+		return 0;
 
 	strm->hdl.gz->next_in = (Bytef *)strm->obuf;
 	strm->hdl.gz->avail_in = strm->obuflen;
@@ -386,7 +398,9 @@ lzflush(z_strm *strm)
 	int oret;
 	size_t ret;
 
-	/* anything to do? */
+		/* for non-blocking mode */
+	if (strm->nextstrm->strmflush(strm->nextstrm) < 0)
+		return -1;
 
 	if (strm->obuflen == 0)
 		return 0;
@@ -512,6 +526,13 @@ snappyflush(z_strm *strm)
 	char *cbufp = cbuf;
 	int oret;
 
+	/* for non-blocking mode */
+	if (strm->nextstrm->strmflush(strm->nextstrm) < 0)
+		return -1;
+
+	if (strm->obuflen == 0)
+		return 0;
+
 	cret = snappy_compress(strm->obuf, strm->obuflen, cbuf, &cbuflen);
 
 	if (cret != SNAPPY_OK)
@@ -600,9 +621,10 @@ static inline ssize_t
 sslwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ)
-		if (sslflush(strm) != 0)
-			return -1;
+	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+		errno = ENOBUFS;
+		return -1;
+	}
 
 	/* append metric to buf */
 	memcpy(strm->obuf + strm->obuflen, buf, sze);
@@ -621,8 +643,8 @@ sslflush(z_strm *strm)
 	int cnt;
 	if (strm->obuflen == 0)
 		return 0;
-	p = strm->obuf;
-	len = strm->obuflen;
+	p = strm->obuf + strm->obufpos;
+	len = strm->obuflen - strm->obufpos;
 	for (cnt = 0; cnt < SERVER_MAX_SEND; cnt++) {
 		errno = 0;
 		if ((slen = SSL_write(strm->hdl.ssl, p, len)) != len) {
@@ -633,18 +655,24 @@ sslflush(z_strm *strm)
 				int ssl_err;
 				if (errno == EINTR)
 					continue;
+
+				strm->obufpos = p - strm->obuf;
 				ssl_err = SSL_get_error(strm->hdl.ssl, slen);
-				if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE)
-					continue;
-				else
-					return slen;
+				if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE) {
+					errno = EAGAIN;
+				}
+				return -1;
+
 			}
 		} else {
 			strm->obuflen = 0;
+			strm->obufpos = 0;
 			return 0;
 		}
 	}
 
+	/* so slow, throttle */
+	errno = EAGAIN;
 	return -1;
 }
 
@@ -756,6 +784,8 @@ sslnew(server *s, int osize) {
 	}
 
 	s->strm->obufsize = osize;
+	s->strm->obuflen = 0;
+	s->strm->obufpos = 0;
 
 	s->strm->obuf = malloc(s->strm->obufsize);
 	if (s->strm->obuf == NULL) {
@@ -797,13 +827,145 @@ server_disconnect(server *self) {
 	}
 }
 
-char server_connect(server *self)
-{
+/** Returns true on success, or false if there was an error */
+int socket_set_blocking(int fd, int blocking) {
+   if (fd < 0) return 0;
+
+   int flags = fcntl(fd, F_GETFL, 0);
+   if (flags == -1) return -1;
+   flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+   return (fcntl(fd, F_SETFL, flags) == 0) ? 1 : 0;
+}
+
+/* call after connect success */
+int server_setup(server *self) {
 #if defined(HAVE_SSL) || defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
 	int compress_type = self->transport & 0xFFFF;
 #endif
-
 	struct timeval timeout;
+	/* ensure we will break out of connections being stuck more
+	 * quickly than the kernel would give up */
+	timeout.tv_sec = 10;
+	timeout.tv_usec = (rand() % 300) * 1000;
+	if (setsockopt(self->fd, SOL_SOCKET, SO_SNDTIMEO,
+				&timeout, sizeof(timeout)) != 0)
+		; /* ignore */
+	if (self->sockbufsize > 0)
+		if (setsockopt(self->fd, SOL_SOCKET, SO_SNDBUF,
+					&self->sockbufsize, sizeof(self->sockbufsize)) != 0)
+			; /* ignore */
+
+#ifdef SO_NOSIGPIPE
+	if (self->ctype == CON_TCP || self->ctype == CON_UDP) {
+		int enable = 1;
+		if (setsockopt(self->fd, SOL_SOCKET, SO_NOSIGPIPE,
+					(void *)&enable, sizeof(enable)) != 0)
+			logout("warning: failed to ignore SIGPIPE on socket: %s\n",
+					strerror(errno));
+	}
+#endif
+
+#ifdef HAVE_GZIP
+	if (compress_type == W_GZIP) {
+		if (gzipsetup(self) == -1) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			close(self->fd);
+			self->fd = -1;
+			return -1;
+		}
+	}
+#endif
+#ifdef HAVE_LZ4
+	if (compress_type == W_LZ4) {
+		if (lzsetup(self) == -1) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			close(self->fd);
+			self->fd = -1;
+			return -1;
+		}
+	}
+#endif
+#ifdef HAVE_SNAPPY
+	if (compress_type == W_SNAPPY) {
+		if (snappysetup(self) == -1) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			close(self->fd);
+			self->fd = -1;
+			return -1;
+		}
+	}
+#endif
+#ifdef HAVE_SSL
+	if ((self->transport & ~0xFFFF) == W_SSL) {
+		int rv;
+		z_strm *sstrm;
+
+		if (compress_type == W_PLAIN) { /* just SSL, nothing else */
+			sstrm = self->strm;
+		} else {
+			sstrm = self->strm->nextstrm;
+		}
+		sstrm->obuflen = 0;
+
+		/* make socket blocking again */
+		if (socket_set_blocking(self->fd, 1) < 0) {
+			logerr("failed to remove socket non-blocking "
+					"mode: %s\n", strerror(errno));
+			close(self->fd);
+			self->fd = -1;
+			return -1;
+		}
+		SSL_set_tlsext_host_name(sstrm->hdl.ssl, self->ip);
+		if (SSL_set_fd(sstrm->hdl.ssl, self->fd) == 0) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			logerr("failed to SSL_set_fd: %s\n",
+					ERR_reason_error_string(ERR_get_error()));
+			sstrm->strmclose(sstrm);
+			self->fd = -1;
+			return -1;
+		}
+		if ((rv = SSL_connect(sstrm->hdl.ssl)) != 1) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			logerr("failed to connect ssl stream: %s\n",
+					sslerror(sstrm, rv));
+			sstrm->strmclose(sstrm);
+			self->fd = -1;
+			return -1;
+		}
+		if ((rv = SSL_get_verify_result(sstrm->hdl.ssl)) != X509_V_OK) {
+			__sync_add_and_fetch(&(self->failure), 1);
+			logerr("failed to verify ssl certificate: %s\n",
+					sslerror(sstrm, rv));
+			sstrm->strmclose(sstrm);
+			self->fd = -1;
+			return -1;
+		}
+		if (socket_set_blocking(self->fd, 0) < 0) {
+			logerr("failed to set socket non-blocking mode: %s\n",
+					strerror(errno));
+			close(self->fd);
+			self->fd = -1;
+			return -1;
+		}
+	} else
+#endif
+	{
+		z_strm *pstrm;
+
+		if (self->transport == W_PLAIN) { /* just plain socket */
+			pstrm = self->strm;
+		} else {
+			pstrm = self->strm->nextstrm;
+			pstrm->obuflen = 0;			
+		}
+		pstrm->hdl.sock = self->fd;
+	}
+	return self->fd;	
+}
+
+int server_connect(server *self)
+{
+	int args = 0;
 	if (self->reresolve) {  /* can only be CON_UDP/CON_TCP */
 		struct addrinfo *saddr;
 		char sport[8];
@@ -885,7 +1047,6 @@ char server_connect(server *self)
 			return -1;
 	} else {  /* CON_TCP */
 		int ret;
-		int args;
 		struct addrinfo *walk;
 
 		for (walk = self->saddr; walk != NULL; walk = walk->ai_next) {
@@ -902,8 +1063,7 @@ char server_connect(server *self)
 
 			/* put socket in non-blocking mode such that we can
 			 * poll() (time-out) on the connect() call */
-			args = fcntl(self->fd, F_GETFL, NULL);
-			if (fcntl(self->fd, F_SETFL, args | O_NONBLOCK) < 0) {
+			if (socket_set_blocking(self->fd, 0) < 0) {
 				logerr("failed to set socket non-blocking mode: %s\n",
 						strerror(errno));
 				close(self->fd);
@@ -914,7 +1074,7 @@ char server_connect(server *self)
 
 			if (ret < 0 && errno == EINPROGRESS) {
 				/* wait for connection to succeed if the OS thinks
-				 * it can succeed */
+				 * it can successed */
 				struct pollfd ufds[1];
 				ufds[0].fd = self->fd;
 				ufds[0].events = POLLIN | POLLOUT;
@@ -979,13 +1139,13 @@ char server_connect(server *self)
 			}
 
 			/* make socket blocking again */
-			if (fcntl(self->fd, F_SETFL, args) < 0) {
-				logerr("failed to remove socket non-blocking "
-						"mode: %s\n", strerror(errno));
-				close(self->fd);
-				self->fd = -1;
-				return -1;
-			}
+			// if (fcntl(self->fd, F_SETFL, args) < 0) {
+			// 	logerr("failed to remove socket non-blocking "
+			// 			"mode: %s\n", strerror(errno));
+			// 	close(self->fd);
+			// 	self->fd = -1;
+			// 	return -1;
+			// }
 
 			/* disable Nagle's algorithm, issue #208 */
 			args = 1;
@@ -1018,109 +1178,7 @@ char server_connect(server *self)
 			return -1;
 	}
 
-	/* ensure we will break out of connections being stuck more
-	 * quickly than the kernel would give up */
-	timeout.tv_sec = 10;
-	timeout.tv_usec = (rand() % 300) * 1000;
-	if (setsockopt(self->fd, SOL_SOCKET, SO_SNDTIMEO,
-				&timeout, sizeof(timeout)) != 0)
-		; /* ignore */
-	if (self->sockbufsize > 0)
-		if (setsockopt(self->fd, SOL_SOCKET, SO_SNDBUF,
-					&self->sockbufsize, sizeof(self->sockbufsize)) != 0)
-			; /* ignore */
-
-#ifdef SO_NOSIGPIPE
-	if (self->ctype == CON_TCP || self->ctype == CON_UDP) {
-		int enable = 1;
-		if (setsockopt(self->fd, SOL_SOCKET, SO_NOSIGPIPE,
-					(void *)&enable, sizeof(enable)) != 0)
-			logout("warning: failed to ignore SIGPIPE on socket: %s\n",
-					strerror(errno));
-	}
-#endif
-
-#ifdef HAVE_GZIP
-	if (compress_type == W_GZIP) {
-		if (gzipsetup(self) == -1) {
-			__sync_add_and_fetch(&(self->failure), 1);
-			close(self->fd);
-			self->fd = -1;
-			return -1;
-		}
-	}
-#endif
-#ifdef HAVE_LZ4
-	if (compress_type == W_LZ4) {
-		if (lzsetup(self) == -1) {
-			__sync_add_and_fetch(&(self->failure), 1);
-			close(self->fd);
-			self->fd = -1;
-			return -1;
-		}
-	}
-#endif
-#ifdef HAVE_SNAPPY
-	if (compress_type == W_SNAPPY) {
-		if (snappysetup(self) == -1) {
-			__sync_add_and_fetch(&(self->failure), 1);
-			close(self->fd);
-			self->fd = -1;
-			return -1;
-		}
-	}
-#endif
-#ifdef HAVE_SSL
-	if ((self->transport & ~0xFFFF) == W_SSL) {
-		int rv;
-		z_strm *sstrm;
-
-		if (compress_type == W_PLAIN) { /* just SSL, nothing else */
-			sstrm = self->strm;
-		} else {
-			sstrm = self->strm->nextstrm;
-		}
-		sstrm->obuflen = 0;
-
-		SSL_set_tlsext_host_name(sstrm->hdl.ssl, self->ip);
-		if (SSL_set_fd(sstrm->hdl.ssl, self->fd) == 0) {
-			__sync_add_and_fetch(&(self->failure), 1);
-			logerr("failed to SSL_set_fd: %s\n",
-					ERR_reason_error_string(ERR_get_error()));
-			sstrm->strmclose(sstrm);
-			self->fd = -1;
-			return -1;
-		}
-		if ((rv = SSL_connect(sstrm->hdl.ssl)) != 1) {
-			__sync_add_and_fetch(&(self->failure), 1);
-			logerr("failed to connect ssl stream: %s\n",
-					sslerror(sstrm, rv));
-			sstrm->strmclose(sstrm);
-			self->fd = -1;
-			return -1;
-		}
-		if ((rv = SSL_get_verify_result(sstrm->hdl.ssl)) != X509_V_OK) {
-			__sync_add_and_fetch(&(self->failure), 1);
-			logerr("failed to verify ssl certificate: %s\n",
-					sslerror(sstrm, rv));
-			sstrm->strmclose(sstrm);
-			self->fd = -1;
-			return -1;
-		}
-	} else
-#endif
-	{
-		z_strm *pstrm;
-
-		if (self->transport == W_PLAIN) { /* just plain socket */
-			pstrm = self->strm;
-		} else {
-			pstrm = self->strm->nextstrm;
-			pstrm->obuflen = 0;			
-		}
-		pstrm->hdl.sock = self->fd;
-	}
-	return self->fd;
+	return server_setup(self);
 }
 
 queue *server_queue(server *s)
@@ -1142,10 +1200,36 @@ static inline int server_secpos_alloc(server *self)
 	return 0;
 }
 
+
+/* check for write ready 
+ * TODO: replace with poll on serveral servers fd in cluster threads for reduce cpu usage */
+int server_poll(server *self) {
+	int ret;
+	struct pollfd ufd;
+
+	ufd.fd = self->fd;
+	ufd.events = POLLOUT;
+	ret = poll(&ufd, 1, 10000);
+	if (ret == 0) {
+		/* timeout */
+		logerr("failed to write %s:%u, server timeout\n", self->ip, self->port);
+		server_disconnect(self);
+	} else if (ret == -1) {
+		logerr("failed to write %s:%u, server poll error: %s\n", self->ip, self->port, strerror(errno));
+		server_disconnect(self);
+	} else if (ufd.revents & POLLHUP) {
+		logerr("failed to write %s:%u, server connection hungup\n", self->ip, self->port);
+		server_disconnect(self);
+	} else if (!(ufd.revents & POLLOUT)) {
+		logerr("failed to write %s:%u, server poll revents: %d\n", self->ip, self->port, ufd.revents);
+		server_disconnect(self);
+	}
+	return ret;
+}
+
 static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shutdown)
 {
 	int ret;
-	struct pollfd ufd;
 	size_t len;
 	ssize_t slen;
 	const char **p;
@@ -1307,24 +1391,8 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		}
 	}
 
-	/* check for write ready 
-	 * TODO: replace with poll on serveral servers fd in cluster threads for reduce cpu usage */
-	ufd.fd = self->fd;
-	ufd.events = POLLOUT;
-	ret = poll(&ufd, 1, 10000);
-	if (ret == 0) {
-		/* timeout */
-		logerr("failed to write %s:%u, server timeout\n", self->ip, self->port);
-		server_disconnect(self);
-	} else if (ret == -1) {
-		logerr("failed to write %s:%u, server poll error: %s\n", self->ip, self->port, strerror(errno));
-		server_disconnect(self);
-	} else if (ufd.revents & POLLHUP) {
-		logerr("failed to write %s:%u, server connection hungup\n", self->ip, self->port);
-		server_disconnect(self);
-	} else if (!(ufd.revents & POLLOUT)) {
-		logerr("failed to write %s:%u, server poll revents: %d\n", self->ip, self->port, ufd.revents);
-		server_disconnect(self);
+	if ((ret = server_poll(self)) <= 0) {
+		return ret;
 	}
 
 	/* send up to batch size */
@@ -1383,6 +1451,9 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			if (slen == -1 && errno == ENOBUFS) {
 				/* Flush and retry */
 				if (self->strm->strmflush(self->strm) == 0) {
+					if ((ret = server_poll(self)) <= 0) {
+						break;
+					}
 					slen = self->strm->strmwrite(self->strm, m, mlen);
 				}
 			}

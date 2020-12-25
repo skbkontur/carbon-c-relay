@@ -43,8 +43,9 @@ typedef struct _z_strm {
 	const char *(*strmerror)(struct _z_strm *, int);     /* get last err str */
 	struct _z_strm *nextstrm;                            /* set when chained */
 	char *obuf;
-	int obufsize;
-	int obuflen;
+	size_t obufsize;
+	size_t obufpos;
+	size_t obuflen;
 #ifdef HAVE_SSL
 	SSL_CTX *ctx;
 #endif
@@ -59,7 +60,8 @@ typedef struct _z_strm {
 		} z;
 #endif
 #ifdef HAVE_SSL
-		SSL *ssl;
+			SSL *ssl;
+//#error SSL not realized in non-blocking mode
 #endif
 		int sock;
 	} hdl;

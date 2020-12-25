@@ -105,9 +105,9 @@ noinst_PROGRAMS += test_server_internal
 test_server_internal_SOURCES = server_internal_test.c listener_mock.c $(SOURCES)
 test_server_internal_LDADD = $(RELAY_LIBS)
 
-noinst_PROGRAMS += bench_queue
-bench_queue_SOURCES = queue_bench.c queue.c benchmark.c benchmark_threads.c pthread_barrier.c
-bench_queue_LDADD = $(RELAY_LIBS)
+noinst_PROGRAMS += test_server_any_of2
+test_server_any_of2_SOURCES = server_any_of2_test.c listener_mock.c $(SOURCES)
+test_server_any_of2_LDADD = $(RELAY_LIBS)
 
 CRTESTS = \
 	issue10 \
