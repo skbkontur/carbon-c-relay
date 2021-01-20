@@ -221,7 +221,7 @@ CTEST2(server_plain_tcp, connect_and_send) {
     }
 
     data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
-                         data->proto, data->saddr, data->hint, queuesize,
+                         data->proto, data->saddr, data->hint, queuesize, NULL,
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
@@ -268,7 +268,7 @@ CTEST2(server_gzip_tcp, connect_and_send) {
     }
 
     data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
-                         data->proto, data->saddr, data->hint, queuesize,
+                         data->proto, data->saddr, data->hint, queuesize, NULL,
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 

@@ -34,10 +34,11 @@
 #include <assert.h>
 
 #include "relay.h"
-#include "queue.h"
 #include "dispatcher.h"
 #include "collector.h"
 #include "server_internal.h"
+#include "consistent-hash.h"
+#include "cluster.h"
 
 #define FAIL_WAIT_TIME   6  /* 6 * 250ms = 1.5s */
 #define DISCONNECT_WAIT_TIME   12  /* 12 * 250ms = 3s */
@@ -53,8 +54,13 @@ struct _server {
 	char *instance;
 	struct addrinfo *saddr;
 	struct addrinfo *hint;
-	char reresolve:1;
 	int fd;
+	char reresolve:1;
+	/* 
+	 * queue shared with other servers (for FAILOVER or LOAD BALANCING)
+	 * free queue in cluster/router cleanup
+	 */
+	char shared_queue:2;
 	z_strm *strm;
 	queue *queue;
 	size_t bsize;
@@ -1186,6 +1192,21 @@ queue *server_queue(server *s)
 	return s->queue;
 }
 
+char server_queue_is_shared(server *s)
+{
+	return s->shared_queue;
+}
+
+queue *server_set_shared_queue(server *s, queue *q)
+{
+	if (s->shared_queue && s->queue != q) {
+		queue *qold = s->queue;
+		s->queue = q;
+		return qold;
+	}
+	return NULL;
+}
+
 static inline int server_secpos_alloc(server *self)
 {
 	int i;
@@ -1625,12 +1646,17 @@ server_new(
 		struct addrinfo *saddr,
 		struct addrinfo *hint,
 		size_t qsize,
+		queue *q,
 		size_t bsize,
 		int maxstalls,
 		unsigned short iotimeout,
 		unsigned int sockbufsize)
 {
 	server *ret;
+
+	if (q == NULL && qsize == 0) {
+		return NULL;
+	}
 
 	if ((ret = malloc(sizeof(server))) == NULL)
 		return NULL;
@@ -1665,10 +1691,17 @@ server_new(
 		return NULL;
 	}
 	ret->fd = -1;
-	ret->queue = queue_new(qsize);
-	if (ret->queue == NULL) {
-		server_cleanup(ret);
-		return NULL;
+
+	if (q == NULL) {
+		ret->shared_queue = 0;
+		ret->queue = queue_new(qsize);
+		if (ret->queue == NULL) {
+			server_cleanup(ret);
+			return NULL;
+		}
+	} else {
+		ret->shared_queue = 1;
+		ret->queue = q;
 	}
 
 	/* setup normal or SSL-wrapped socket first */
@@ -1784,6 +1817,49 @@ server_cmp(server *s, struct addrinfo *saddr, const char *ip, unsigned short por
 	return 1;  /* not equal */
 }
 
+servers *cluster_servers(cluster *c)
+{
+	switch (c->type) {
+		case FORWARD:
+		case FILELOG:
+		case FILELOGIP:
+			return c->members.forward;
+			;;
+		case FAILOVER:		
+		case ANYOF:
+			return c->members.anyof->list;
+			;;
+		case CARBON_CH:
+		case FNV1A_CH:
+		case JUMP_CH:
+			return c->members.ch->servers;
+			;;
+		default:
+			return NULL;
+			;;
+	}
+}
+
+/* Start cluster servers */
+char cluster_start(cluster *c)
+{
+	int err = 0;
+	servers *s = cluster_servers(c);
+
+	for ( ; s != NULL; s = s->next) {
+		if ((err = server_start(s->server)) != 0) {
+			logerr("failed to start server %s:%u: %s\n",
+					server_ip(s->server),
+					server_port(s->server),
+					strerror(err));
+			err = 1;
+			break;
+		}
+	}
+
+	return err;
+}
+
 /**
  * Starts a previously created server using server_new().  Returns
  * errno if starting a thread failed, after which the caller should
@@ -1895,6 +1971,25 @@ server_send(server *s, const char *d, char force)
 	return 1;
 }
 
+/* Iniciate shutdown cluster servers */
+void cluster_shutdown(cluster *c)
+{
+	servers *s = cluster_servers(c);
+
+	for ( ; s != NULL; s = s->next) {
+		server_shutdown(s->server);
+	}
+}
+
+void cluster_shutdown_wait(cluster *c)
+{
+	servers *s = cluster_servers(c);
+
+	for ( ; s != NULL; s = s->next) {
+		server_shutdown_wait(s->server);
+	}
+}
+
 /**
  * Tells this server to finish sending pending items from its queue.
  */
@@ -1925,7 +2020,7 @@ void server_shutdown_wait(server *s)
  */
 void
 server_cleanup(server *s) {
-	if (s->queue != NULL) {
+	if (s->queue != NULL && s->shared_queue == 0) {
 		queue_destroy(s->queue);
 	}
 	free(s->batch);
@@ -1972,13 +2067,17 @@ void
 server_swap_queue(server *l, server *r)
 {
 	queue *t;
+	char shared;
 
 	assert(l->keep_running == 0 || l->tid == 0);
 	assert(r->keep_running == 0 || r->tid == 0);
 
 	t = l->queue;
+	shared = l->shared_queue;
 	l->queue = r->queue;
+	l->shared_queue = r->shared_queue;
 	r->queue = t;
+	r->shared_queue = shared;
 	
 	/* swap associated statistics as well */
 	l->metrics = r->metrics;

@@ -17,70 +17,18 @@
 #ifndef _CONFFILE_H
 #define _CONFFILE_H 1
 
-#include "server.h"
-#include "aggregator.h"
-#include "consistent-hash.h"
-#include "allocator.h"
-#include "receptor.h"
-
 #define GRAPHITE_PORT 2003
 
-enum clusttype {
-	BLACKHOLE,  /* /dev/null-like destination */
-	GROUP,      /* pseudo type to create a matching tree */
-	AGGRSTUB,   /* pseudo type to have stub matches for aggregation returns */
-	STATSTUB,   /* pseudo type to have stub matches for collector returns */
-	VALIDATION, /* pseudo type to perform additional data validation */
-	FORWARD,
-	FILELOG,    /* like forward, write metric to file */
-	FILELOGIP,  /* like forward, write ip metric to file */
-	CARBON_CH,  /* original carbon-relay.py consistent-hash */
-	FNV1A_CH,   /* FNV1a-based consistent-hash */
-	JUMP_CH,    /* jump consistent hash with fnv1a input */
-	ANYOF,      /* FNV1a-based hash, but with backup by others */
-	FAILOVER,   /* ordered attempt delivery list */
-	AGGREGATION,
-	REWRITE
-};
-
-typedef struct _servers {
-	server *server;
-	int refcnt;
-	struct _servers *next;
-} servers;
-
-typedef struct {
-	unsigned char repl_factor;
-	ch_ring *ring;
-	servers *servers;
-} chashring;
-
-typedef struct {
-	unsigned short count;
-	server **servers;
-	servers *list;
-} serverlist;
+#include "server.h"
+#include "aggregator.h"
+#include "allocator.h"
+#include "receptor.h"
+#include "cluster.h"
 
 typedef struct _validate {
 	struct _route *rule;
 	enum { VAL_LOG, VAL_DROP } action;
 } validate;
-
-typedef struct _cluster {
-	char *name;
-	enum clusttype type;
-	char isdynamic:1;
-	union {
-		chashring *ch;
-		servers *forward;
-		serverlist *anyof;
-		aggregator *aggregation;
-		struct _route *routes;
-		char *replacement;
-		struct _validate *validation;
-	} members;
-	struct _cluster *next;
-} cluster;
 
 typedef struct _destinations {
 	cluster *cl;

@@ -20,6 +20,7 @@
 
 #include <netdb.h>
 
+#include "queue.h"
 #include "relay.h"
 
 #define SERVER_STALL_BITS  4  /* 0 up to 15 */
@@ -41,6 +42,7 @@ server *server_new(
 		struct addrinfo *saddr,
 		struct addrinfo *hint,
 		size_t queuesize,
+		queue *queue,
 		size_t batchsize,
 		int maxstalls,
 		unsigned short iotimeout,
@@ -74,5 +76,7 @@ size_t server_get_dropped_sub(server *s);
 size_t server_get_requeue_sub(server *s);
 size_t server_get_queue_len(server *s);
 size_t server_get_queue_size(server *s);
+char server_queue_is_shared(server *s);
+queue *server_set_shared_queue(server *s, queue *q);
 
 #endif

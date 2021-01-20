@@ -28,17 +28,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <libgen.h>
 
 #include "consistent-hash.h"
 #include "md5.h"
 #include "relay.h"
 #include "router.h"
 #include "server.h"
+#include "cluster.h"
 
 #define SRVCNT 8
 #define REPLCNT 2
 
 unsigned char mode = 0;
+
+char testdir[200];
 
 int relaylog(enum logdst dest, const char *fmt, ...) {
     (void) dest;
@@ -63,6 +67,14 @@ char relay_hostname[256];
 char *sslCA = NULL;
 char sslCAisdir = 0;
 #endif
+static int batchsize = 2500;
+static int queuesize = 25000;
+static int maxstalls = 4;
+static unsigned short iotimeout = 600;
+static unsigned short listenport = 2003;
+static int sockbufsize = 0;
+
+queue *server_queue(server *s);
 
 CTEST_DATA(router_test) {
     router *r;
@@ -185,4 +197,85 @@ CTEST2(router_test, router_validate_address_hostname_port) {
     data->retsaddr = NULL;
 }
 
-int main(int argc, const char *argv[]) { return ctest_main(argc, argv); }
+CTEST(router_reload_test, swap_queue) {
+    router *rtr, *newrtr;
+    servers *s;
+    queue *oq_3, *q_3;
+    cluster *c;
+    char config_1[256], config_2[256], config_3[256];
+
+    snprintf(config_1, sizeof(config_1), "%s/reload-1.conf", testdir);
+    snprintf(config_2, sizeof(config_2), "%s/reload-2.conf", testdir);
+    snprintf(config_3, sizeof(config_3), "%s/reload-3.conf", testdir);
+
+    /* load */
+    rtr = router_readconfig(NULL, config_1, 2,
+					queuesize, batchsize, maxstalls,
+					iotimeout, sockbufsize, listenport);
+    ASSERT_NOT_NULL_D(rtr, "failed to read configuration 1");
+    router_start(rtr);
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "one")->queue, "cluster one (forward) shared queue must be NULL (configuration 1)");
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "two")->queue, "cluster two (any_of) shared queue must be NULL (configuration 1)");
+    c = router_cluster(rtr, "three");
+    oq_3 = c->queue;
+    for (s = cluster_servers(c); s != NULL; s = s->next) {
+        /* check for shared queue */
+        ASSERT_EQUAL_D(1, server_queue_is_shared(s->server), "cluster three (failover) shared queue not set (configuration 1)");        
+        ASSERT_EQUAL_U_D((uintmax_t) oq_3, (uintmax_t) server_queue(s->server), "cluster three (failover) shared queue not set (configuration 1)");
+    }
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "four")->queue, "cluster four (carbon_ch) shared queue must be NULL (configuration 1)");
+
+    /* 1-st reload */
+    newrtr = router_readconfig(NULL, config_2, 2,
+					queuesize, batchsize, maxstalls,
+					iotimeout, sockbufsize, listenport);
+    ASSERT_NOT_NULL_D(newrtr, "failed to read configuration 2");
+    router_swap(newrtr, rtr);
+    router_free(rtr);
+    rtr = newrtr;
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "one")->queue, "cluster one (forward) shared queue must be NULL (configuration 2)");
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "two")->queue, "cluster two (any_of) shared queue must be NULL (configuration 2)");
+    c = router_cluster(rtr, "three");
+    q_3 = c->queue;
+    ASSERT_EQUAL_U_D((uintmax_t) oq_3, (uintmax_t) q_3, "cluster three (failover) shared queue not swapped (configuration 2)");
+    for (s = cluster_servers(c); s != NULL; s = s->next) {
+        /* check for shared queue */
+        ASSERT_EQUAL_D(1, server_queue_is_shared(s->server), "cluster three (failover) shared queue not set (configuration 2)");        
+        ASSERT_EQUAL_U_D((uintmax_t) q_3, (uintmax_t) server_queue(s->server), "cluster three (failover) shared queue not set (configuration 2)");
+    }
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "four")->queue, "cluster four (carbon_ch) shared queue must be NULL (configuration 2)");
+
+    /* 2-st reload */
+    newrtr = router_readconfig(NULL, config_3, 2,
+					queuesize, batchsize, maxstalls,
+					iotimeout, sockbufsize, listenport);
+    ASSERT_NOT_NULL_D(newrtr, "failed to read configuration 3");
+    router_swap(newrtr, rtr);
+    router_free(rtr);
+    rtr = newrtr;
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "one")->queue, "cluster one (forward) shared queue must be NULL (configuration 3)");
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "two")->queue, "cluster two (any_of) shared queue must be NULL (configuration 3)");
+    c = router_cluster(rtr, "three");
+    q_3 = c->queue;
+    ASSERT_EQUAL_U_D((uintmax_t) oq_3, (uintmax_t) q_3, "cluster three (failover) shared queue not swapped (configuration 3)");
+    for (s = cluster_servers(c); s != NULL; s = s->next) {
+        /* check for shared queue */
+        ASSERT_EQUAL_D(1, server_queue_is_shared(s->server), "cluster three (failover) shared queue not set (configuration 3)");        
+        ASSERT_EQUAL_U_D((uintmax_t) q_3, (uintmax_t) server_queue(s->server), "cluster three (failover) shared queue not set (configuration 3)");
+    }
+    ASSERT_EQUAL_U_D((uintmax_t) oq_3, (uintmax_t) q_3, "cluster three (failover) shared queue not swapped (configuration 3)");
+    ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "four")->queue, "cluster four (carbon_ch) shared queue must be NULL (configuration 3)");
+
+    /* cleanup */
+    router_shutdown(rtr);
+    router_free(rtr);
+}
+
+int main(int argc, const char *argv[]) {
+    const char *dir = dirname((char *) argv[0]);
+
+    snprintf(testdir, sizeof(testdir), "%s/test", dir);
+    strcpy(relay_hostname, "relay");
+
+    return ctest_main(argc, argv);
+}

@@ -640,6 +640,14 @@ router_add_server(
 	server *newserver;
 	servers *w = NULL;
 
+	if (cl->type == FAILOVER && cl->queue == NULL) {
+		/* shared queue */
+		cl->queue = queue_new(ret->conf.queuesize);
+		if (cl->queue == NULL) {
+			return ra_strdup(ret->a, "cluster queue alloc failed");
+		}
+	}
+
 	walk = saddrs;  /* NULL if file */
 	do {
 		servers *s;
@@ -671,7 +679,7 @@ router_add_server(
 		if (newserver == NULL) {
 			newserver = server_new(ip, port,
 					type, transport, proto, walk, hint,
-					ret->conf.queuesize, ret->conf.batchsize,
+					ret->conf.queuesize, cl->queue, ret->conf.batchsize,
 					ret->conf.maxstalls, ret->conf.iotimeout,
 					ret->conf.sockbufsize);
 			if (newserver == NULL) {
@@ -871,6 +879,8 @@ router_add_cluster(router *r, cluster *cl)
 	cluster *last = NULL;
 	servers *w;
 
+	//size_t i;
+
 	for (cw = r->clusters; cw != NULL; last = cw, cw = cw->next)
 		if (cw->name != NULL && cl->name != NULL &&
 				strcmp(cw->name, cl->name) == 0)
@@ -879,13 +889,27 @@ router_add_cluster(router *r, cluster *cl)
 		last = r->clusters;
 	last->next = cl;
 
+	// if (cl->type == FAILOVER && cl->queue == NULL) {
+	// 	/* shared queue */
+	// 	cl->queue = queue_new(r->conf.queuesize);
+	// 	if (cl->queue == NULL) {
+	// 		return ra_strdup(r->a, "cluster queue alloc failed");
+	// 	}
+	// } else {
+	// 	cl->queue = NULL;
+	// }
+
 	/* post checks/fixups */
 	if (cl->type == ANYOF || cl->type == FAILOVER) {
 		size_t i = 0;
 		cl->members.anyof->servers =
 			ra_malloc(r->a, sizeof(server *) * cl->members.anyof->count);
-		if (cl->members.anyof->servers == NULL)
+		if (cl->members.anyof->servers == NULL) {
+			if (cl->queue != NULL) {
+				queue_destroy(cl->queue);
+			}
 			return ra_strdup(r->a, "malloc failed for anyof servers");
+		}
 		for (w = cl->members.anyof->list; w != NULL; w = w->next)
 			cl->members.anyof->servers[i++] = w->server;
 		for (w = cl->members.anyof->list; w != NULL; w = w->next) {
@@ -1009,6 +1033,7 @@ router_add_stubroute(
 	cl->type = type;
 	cl->members.routes = m;
 	cl->next = NULL;
+	cl->queue = NULL;
 	err = router_add_cluster(rtr, cl);
 	if (err != NULL)
 		return err;
@@ -1299,6 +1324,7 @@ router_readconfig(router *orig,
 		cl->type = BLACKHOLE;
 		cl->members.forward = NULL;
 		cl->next = NULL;
+		cl->queue = NULL;
 		ret->clusters = cl;
 	} else {
 		ret = orig;
@@ -2306,12 +2332,54 @@ router_printdiffs(router *old, router *new, FILE *out)
 }
 
 /**
+ * Swap routers (for reload).
+ */
+char router_swap(router *new, router *old)
+{
+	int ret = 0;
+	// cluster *c, cold;
+
+	// for (c = new->clusters; c != NULL; c = c->next) {
+	// 	cold = router_cluster(old, c->name);
+	// 	if (cold == NULL) {
+	// 		/* new cluster */
+	// 	} else {
+
+	// 	}
+	// }
+
+
+	/* Transplant the queues for the same servers, so we keep their
+	 * queues (potentially with data) around.  To do so, we need to make
+	 * sure the servers aren't being operated on. */
+	router_shutdown(old);
+
+	/* Because we know that ip:port:prot is unique in both sets, when we
+	 * find a match, we can just swap the queue.  This comes with a
+	 * slight peculiarity, that if a server becomes part of an any_of
+	 * cluster (or failover), its pending queue can now be processed by
+	 * other servers.  While this feels wrong, it can be extremely
+	 * useful in case existing data needs to be migrated to another
+	 * server, e.g. the config on purpose added a failover to offload a
+	 * known dead server before removing it.  This is fairly specific
+	 * but in reality this happens to be desirable every once so often. */
+	router_transplant_queues(new, old);
+
+	/* Before we start the workers sending traffic, start up the
+	 * servers now queues are transplanted. */
+	router_start(new);
+
+	return ret;
+}
+
+/**
  * Evaluates all servers in new and if an identical server exists in
- * old, swaps their queues.
+ * old (in same cluster), swaps their queues for save statistics.
  */
 void
 router_transplant_queues(router *new, router *old)
 {
+	/*
 	servers *os;
 	servers *ns;
 
@@ -2323,6 +2391,43 @@ router_transplant_queues(router *new, router *old)
 			{
 				server_swap_queue(ns->server, os->server);
 				continue;
+			}
+		}
+	}
+	*/
+
+	cluster *oc, *nc;
+
+	for (nc = new->clusters; nc != NULL; nc = nc->next) {
+		servers *ns;
+		
+		ns = cluster_servers(nc);
+		if (nc) {
+			oc = router_cluster(old, nc->name);
+			if (oc && nc->type == oc->type) {
+				/* cluster found, swap queue */
+				servers *os;
+
+				/* swap cluster shared queue */
+				queue *q = nc->queue;
+				nc->queue = oc->queue;
+				oc->queue = q;
+
+				for (; ns != NULL; ns = ns->next) {
+					for (os = cluster_servers(oc); os != NULL; os = os->next) {
+						if (strcmp(server_ip(ns->server), server_ip(os->server)) == 0 &&
+								server_port(ns->server) == server_port(os->server) &&
+								server_ctype(ns->server) == server_ctype(os->server))
+						{
+							server_swap_queue(ns->server, os->server);
+							break;
+						}
+					}
+					if (os == NULL) {
+						/* new server, just replace queue if shared */
+						server_set_shared_queue(ns->server, nc->queue);
+					}
+				}
 			}
 		}
 	}
@@ -2438,6 +2543,7 @@ router_transplant_listener_socks(router *rtr, listener *olsnr, listener *nlsnr)
 char
 router_start(router *rtr)
 {
+	/*
 	servers *s;
 	char ret = 0;
 	int err;
@@ -2453,6 +2559,19 @@ router_start(router *rtr)
 	}
 
 	return ret;
+	*/
+
+	cluster *c;
+	char ret = 0;
+
+	for (c = rtr->clusters; c != NULL; c = c->next) {
+		ret = cluster_start(c);
+		if (ret != 0) {
+			break;
+		}
+	}
+
+	return ret;
 }
 
 /**
@@ -2461,12 +2580,23 @@ router_start(router *rtr)
 void
 router_shutdown(router *rtr)
 {
+	/*
 	servers *s;
 
 	for (s = rtr->srvrs; s != NULL; s = s->next)
 		server_shutdown(s->server);
 	for (s = rtr->srvrs; s != NULL; s = s->next)
 		server_shutdown_wait(s->server);
+	*/
+
+	cluster *c;
+
+	for (c = rtr->clusters; c != NULL; c = c->next) {
+		cluster_shutdown(c);
+	}
+	for (c = rtr->clusters; c != NULL; c = c->next) {
+		cluster_shutdown_wait(c);
+	}
 }
 
 /**
@@ -2476,6 +2606,8 @@ void
 router_free(router *rtr)
 {
 	servers *s;
+	cluster *cl;
+	listener *lwalk;
 
 	router_free_intern(rtr->routes, rtr->conf.workercnt);
 
@@ -2484,6 +2616,18 @@ router_free(router *rtr)
 	 * servers anymore */
 	for (s = rtr->srvrs; s != NULL; s = s->next)
 		server_free(s->server);
+
+	/* free shared queues */
+	for (cl = rtr->clusters; cl != NULL; cl = cl->next) {
+		if (cl->queue != NULL) {
+			queue_destroy(cl->queue);
+		}
+	}
+
+	/* free listener saddr */
+	for (lwalk = rtr->listeners; lwalk != NULL; lwalk = lwalk->next) {
+		freeaddrinfo(lwalk->saddrs);
+	}
 
 	ra_free(rtr->a);
 	free(rtr);

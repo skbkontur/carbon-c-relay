@@ -1770,6 +1770,7 @@ yyreduce:
 		}
 		(yyval.cluster)->name = ra_strdup(ralloc, (yyvsp[-2].crSTRING));
 		(yyval.cluster)->next = NULL;
+    (yyval.cluster)->queue = NULL;
 		(yyval.cluster)->type = (yyvsp[-1].cluster_type).t;
 		switch ((yyval.cluster)->type) {
 			case CARBON_CH:
@@ -1838,6 +1839,7 @@ yyreduce:
 		}
 		(yyval.cluster)->name = ra_strdup(ralloc, (yyvsp[-2].crSTRING));
 		(yyval.cluster)->next = NULL;
+    (yyval.cluster)->queue = NULL;
 		(yyval.cluster)->type = (yyvsp[-1].cluster_file).t;
 		switch ((yyval.cluster)->type) {
 			case FILELOG:
