@@ -25,35 +25,6 @@
 #include "receptor.h"
 #include "cluster.h"
 
-typedef struct _validate {
-	struct _route *rule;
-	enum { VAL_LOG, VAL_DROP } action;
-} validate;
-
-typedef struct _destinations {
-	cluster *cl;
-	struct _destinations *next;
-} destinations;
-
-typedef struct _route {
-	char *pattern;    /* original regex input, used for printing only */
-	regex_t *rule;    /* regex per worker on metric, only if type == REGEX */
-	size_t nmatch;    /* number of match groups */
-	char *strmatch;   /* string to search for if type not REGEX or MATCHALL */
-	destinations *dests; /* where matches should go */
-	char *masq;       /* when set, what to feed to the hashfunc when routing */
-	char stop:1;      /* whether to continue matching rules after this one */
-	enum {
-		MATCHALL,     /* the '*', don't do anything, just match everything */
-		REGEX,        /* a regex match */
-		CONTAINS,     /* find string occurrence */
-		STARTS_WITH,  /* metric must start with string */
-		ENDS_WITH,    /* metric must end with string */
-		MATCHES       /* metric matches string exactly */
-	} matchtype;      /* how to interpret the pattern */
-	struct _route *next;
-} route;
-
 void router_yyerror(void *locp, void *, router *r, allocator *ra, allocator *pa, const char *msg);
 char *router_validate_address(router *rtr, char **retip, unsigned short *retport, void **retsaddr, void **rethint, char *ip, con_proto proto);
 char *router_validate_path(router *rtr, char *path);

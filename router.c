@@ -643,14 +643,6 @@ router_add_server(
 	server *newserver;
 	servers *w = NULL;
 
-	if (cl->type == FAILOVER && cl->queue == NULL) {
-		/* shared queue */
-		cl->queue = queue_new(ret->conf.queuesize);
-		if (cl->queue == NULL) {
-			return ra_strdup(ret->a, "cluster queue alloc failed");
-		}
-	}
-
 	walk = saddrs;  /* NULL if file */
 	do {
 		servers *s;
@@ -908,9 +900,7 @@ router_add_cluster(router *r, cluster *cl)
 		cl->members.anyof->servers =
 			ra_malloc(r->a, sizeof(server *) * cl->members.anyof->count);
 		if (cl->members.anyof->servers == NULL) {
-			if (cl->queue != NULL) {
-				queue_destroy(cl->queue);
-			}
+			cluster_free(cl);
 			return ra_strdup(r->a, "malloc failed for anyof servers");
 		}
 		for (w = cl->members.anyof->list; w != NULL; w = w->next)
@@ -1001,6 +991,45 @@ router_add_aggregator(router *rtr, aggregator *a)
 	return NULL;
 }
 
+cluster *
+cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize) {
+	cluster *cl = ra_malloc(a, sizeof(cluster));
+	if (cl == NULL) {
+		return NULL;
+	}
+
+	if (ctype == FAILOVER && queue_size > 0) {
+		/* shared queue */
+		cl->queue = queue_new(queuesize);
+		if (cl->queue == NULL) {
+			return NULL;
+		}
+	} else {
+		cl->queue = NULL;
+	}
+
+	if (name == NULL) {
+		cl->name = NULL;
+	} else {
+		cl->name = ra_strdup(a, name);
+	}
+	cl->type = ctype;
+	cl->members.routes = m;
+	cl->running = 0;
+	cl->keep_running = SERVER_KEEP_RUNNING;
+
+	cl->next = NULL;
+
+	return cl;
+}
+
+void
+cluster_free(cluster *cl) {
+	if (cl->queue != NULL) {
+		queue_destroy(cl->queue);
+	}
+}
+
 char *
 router_add_stubroute(
 		router *rtr,
@@ -1029,14 +1058,9 @@ router_add_stubroute(
 	if (d == NULL)
 		return ra_strdup(rtr->a, "malloc failed for stub destinations");
 	d->next = NULL;
-	cl = d->cl = ra_malloc(rtr->a, sizeof(cluster));
+	cl = d->cl = cluster_new(NULL, rtr->a, type, m, rtr->conf.queuesize);
 	if (cl == NULL)
 		return ra_strdup(rtr->a, "malloc failed for stub cluster");
-	cl->name = NULL;
-	cl->type = type;
-	cl->members.routes = m;
-	cl->next = NULL;
-	cl->queue = NULL;
 	err = router_add_cluster(rtr, cl);
 	if (err != NULL)
 		return err;
@@ -1312,22 +1336,18 @@ router_readconfig(router *orig,
 		ret->conf.sockbufsize = sockbufsize;
 
 		/* create virtual blackhole cluster */
-		cl = ra_malloc(ret->a, sizeof(cluster));
+		cl = cluster_new("blackhole", ret->a, BLACKHOLE, NULL, 0);
 		if (cl == NULL) {
 			logerr("malloc failed for blackhole cluster\n");
 			router_free(ret);
 			return NULL;
 		}
-		cl->name = ra_strdup(ret->a, "blackhole");
 		if (cl->name == NULL) {
 			logerr("malloc failed for blackhole cluster name\n");
 			router_free(ret);
 			return NULL;
 		}
-		cl->type = BLACKHOLE;
 		cl->members.forward = NULL;
-		cl->next = NULL;
-		cl->queue = NULL;
 		ret->clusters = cl;
 	} else {
 		ret = orig;
@@ -2375,6 +2395,11 @@ char router_swap(router *new, router *old)
 	return ret;
 }
 
+size_t
+router_queue_size(router *rtr) {
+	return rtr->conf.queuesize;
+}
+
 /**
  * Evaluates all servers in new and if an identical server exists in
  * old (in same cluster), swaps their queues for save statistics.
@@ -2630,9 +2655,7 @@ router_free(router *rtr)
 
 	/* free shared queues */
 	for (cl = rtr->clusters; cl != NULL; cl = cl->next) {
-		if (cl->queue != NULL) {
-			queue_destroy(cl->queue);
-		}
+		cluster_free(cl);
 	}
 
 	/* free listener saddr */

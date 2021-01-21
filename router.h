@@ -91,6 +91,7 @@ void router_optimise(router *r, int threshold);
 char router_printdiffs(router *old, router *new, FILE *out);
 char router_swap(router *new, router *old);
 listener *router_contains_listener(router *rtr, listener *lsnr);
+size_t router_queue_size(router *rtr);
 void router_transplant_queues(router *new, router *old);
 void router_transplant_listener_socks(router *rtr, listener *olsnr, listener *nlsnr);
 char router_start(router *r);
