@@ -105,7 +105,7 @@ char *router_getcollectorstub(router *r);
 int router_getcollectorinterval(router *r);
 char *router_getcollectorprefix(router *r);
 col_mode router_getcollectormode(router *r);
-void router_shutdown(router *r);
+void router_shutdown(router *r, int swap, const router *newrtr);
 void router_free(router *r);
 
 /* run before exit from main, prevent sanitizers memory leak report */

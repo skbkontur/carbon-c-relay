@@ -1041,7 +1041,7 @@ main(int argc, char * const argv[])
 	}
 	/* since workers will be freed, stop querying the structures */
 	collector_stop();
-	server_shutdown(internal_submission);
+	server_shutdown(internal_submission, 0);
 	server_free(internal_submission);
 	logout("stopped collector\n");
 	if (numaggregators > 0) {
@@ -1066,7 +1066,7 @@ main(int argc, char * const argv[])
 	/* reduce noisy server s shutdown */
 	usleep(100000);
 
-	router_shutdown(rtr);
+	router_shutdown(rtr, 0, NULL);
 	router_free(rtr);
 	logout("stopped servers\n");
 

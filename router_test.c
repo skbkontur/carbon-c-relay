@@ -267,7 +267,7 @@ CTEST(router_reload_test, swap_queue) {
     ASSERT_NULL_D((uintmax_t) router_cluster(rtr, "four")->queue, "cluster four (carbon_ch) shared queue must be NULL (configuration 3)");
 
     /* cleanup */
-    router_shutdown(rtr);
+    router_shutdown(rtr, 0, NULL);
     router_free(rtr);
 }
 

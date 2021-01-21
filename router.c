@@ -105,7 +105,10 @@ const char *con_trnsp_str[] = {
 	/* 4 */ "snappy"
 };
 
-cluster *router_cluster(router *rtr, const char *clname) {
+cluster *router_cluster(const router *rtr, const char *clname) {
+	if (rtr == NULL) {
+		return NULL;
+	}
     cluster *cl = rtr->clusters;
     while (cl != NULL) {
         if (strcmp(cl->name, clname) == 0) {
@@ -2352,7 +2355,7 @@ char router_swap(router *new, router *old)
 	/* Transplant the queues for the same servers, so we keep their
 	 * queues (potentially with data) around.  To do so, we need to make
 	 * sure the servers aren't being operated on. */
-	router_shutdown(old);
+	router_shutdown(old, 1, new);
 
 	/* Because we know that ip:port:prot is unique in both sets, when we
 	 * find a match, we can just swap the queue.  This comes with a
@@ -2578,21 +2581,29 @@ router_start(router *rtr)
  * Shuts down all resources (servers) associated to this router.
  */
 void
-router_shutdown(router *rtr)
+router_shutdown(router *rtr, int swap, const router *newrtr)
 {
 	/*
 	servers *s;
 
 	for (s = rtr->srvrs; s != NULL; s = s->next)
-		server_shutdown(s->server);
+		server_try_send(s->server);
 	for (s = rtr->srvrs; s != NULL; s = s->next)
-		server_shutdown_wait(s->server);
+		server_try_send_wait(s->server);
 	*/
 
 	cluster *c;
 
 	for (c = rtr->clusters; c != NULL; c = c->next) {
-		cluster_shutdown(c);
+		int swap_cluster = 0;
+		cluster *nc;
+		if (swap) {
+ 			nc  = router_cluster(newrtr, c->name);
+			if (nc && c->queue != NULL && c->type == nc->type) {
+				swap_cluster = swap;
+			}
+		}
+		cluster_shutdown(c, swap_cluster);
 	}
 	for (c = rtr->clusters; c != NULL; c = c->next) {
 		cluster_shutdown_wait(c);

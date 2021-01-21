@@ -61,7 +61,6 @@ char *router_validate_expression(router *rtr, route **retr, char *pat);
 char *router_validate_cluster(router *rtr, cluster **retcl, char *cluster);
 char *router_add_server(router *ret, char *ip, unsigned short port, char *inst, con_type type, con_trnsp transport, con_proto proto, struct addrinfo *saddrs, struct addrinfo *hint, char useall, cluster *cl);
 char *router_add_cluster(router *r, cluster *cl);
-cluster *router_cluster(router *rtr, const char *clname);
 char *router_add_route(router *r, route *rte);
 char *router_add_aggregator(router *rtr, aggregator *a);
 char *router_add_stubroute(router *rtr, enum clusttype type, cluster *w, destinations *dw);

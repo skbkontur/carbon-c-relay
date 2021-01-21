@@ -1248,7 +1248,7 @@ int server_poll(server *self) {
 	return ret;
 }
 
-static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shutdown)
+static ssize_t server_queueread(server *self, size_t qsize, char *idle, char keep_running)
 {
 	int ret;
 	size_t len;
@@ -1300,8 +1300,8 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 		}
 	} else if (self->secondariescnt > 0 &&
 			   (__sync_add_and_fetch(&(self->failure), 0) >= FAIL_WAIT_TIME ||
-				QUEUE_FREE_CRITICAL(qfree, self)||
-				shutdown))
+				QUEUE_FREE_CRITICAL(qfree, self) ||
+				keep_running != SERVER_KEEP_RUNNING))
 	{
 		size_t i;
 		size_t req = 0;
@@ -1355,7 +1355,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 					continue;
 				}
 			}
-			if (shutdown) {
+			if (keep_running != SERVER_KEEP_RUNNING) {
 				logerr("shutting down %s:%u: waiting for requeue %zu metrics to %s:%u\n",
 						self->ip, self->port, queue_len(self->queue),
 						self->secondaries[self->secpos[i]]->ip, self->secondaries[self->secpos[i]]->port);
@@ -1393,7 +1393,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 				__sync_and_and_fetch(&(self->failure), 0);
 				__sync_add_and_fetch(&(self->failure), 1);
 			}
-		} else if (QUEUE_FREE_CRITICAL(qfree, self) && !shutdown) {
+		} else if (QUEUE_FREE_CRITICAL(qfree, self) && keep_running == SERVER_KEEP_RUNNING) {
 			/* skip overloaded destination, if secondaries exist */
 			return -1;
 		}
@@ -1432,7 +1432,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			}
 			if (squeue == NULL)
 				return 0;
-			if (shutdown) {
+			if (keep_running != SERVER_KEEP_RUNNING) {
 				/* be noisy during shutdown so we can track any slowing down
 				 * servers, possibly preventing us to shut down */
 				logerr("shutting down %s:%u: waiting for %zu metrics from %s:%u\n",
@@ -1444,7 +1444,7 @@ static ssize_t server_queueread(server *self, size_t qsize, char *idle, char shu
 			return 0;
 		}
 	} else {
-		if (shutdown) {
+		if (keep_running != SERVER_KEEP_RUNNING) {
 			/* be noisy during shutdown so we can track any slowing down
 			 * servers, possibly preventing us to shut down */
 			logerr("shutting down %s:%u: waiting for %zu metrics\n",
@@ -1556,17 +1556,16 @@ server_queuereader(void *d)
 	size_t qsize = queue_size(self->queue);
 	struct timeval start, stop;
 
-	char shutdown = 0;
+	char keep_running = SERVER_KEEP_RUNNING;
 	ssize_t timeout = shutdown_timeout * 1000000;
 	ssize_t ret;
 
 	self->running = 1;
 	self->alive = 1;
 
-	while (!shutdown) {
+	do {
 		gettimeofday(&start, NULL);
-		shutdown = __sync_bool_compare_and_swap(&(self->keep_running), 0, 0);
-		ret = server_queueread(self, qsize, &idle, shutdown);
+		ret = server_queueread(self, qsize, &idle, keep_running);
 		gettimeofday(&stop, NULL);
 		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
 		if (ret <= 0) {
@@ -1578,44 +1577,47 @@ server_queuereader(void *d)
 		} else {
 			usleep((20 + (rand() % 10)) * 1000);  /* 20ms - 30ms */
 		}
-	}
+		keep_running = __sync_add_and_fetch(&(self->keep_running), 0);
+	} while (keep_running == SERVER_KEEP_RUNNING);
 
-	while (1) {
-		gettimeofday(&start, NULL);
-		ret = server_queueread(self, qsize, &idle, shutdown);
-		gettimeofday(&stop, NULL);
-		__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
-		if (ret == 0) {
-			__sync_bool_compare_and_swap(&(self->alive), 1, 0);
-			if (self->secondariescnt > 0) {
-				int c;
-				char empty = 1;
-				/* workaraound: prevent exit last live reader
-				 * if other server_queuereader read last metrics from queue and can't send it
-				 */
-				for (c = 0; c < self->secondariescnt; c++) {
-					if (self != self->secondaries[c] &&
-						__sync_bool_compare_and_swap(&(self->secondaries[c]->alive), 1, 1)) {
-						empty = 0;
+	if (keep_running == SERVER_TRY_SEND) {
+		while (1) {
+			gettimeofday(&start, NULL);
+			ret = server_queueread(self, qsize, &idle, keep_running);
+			gettimeofday(&stop, NULL);
+			__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
+			if (ret == 0) {
+				__sync_bool_compare_and_swap(&(self->alive), 1, 0);
+				if (self->secondariescnt > 0) {
+					int c;
+					char empty = 1;
+					/* workaraound: prevent exit last live reader
+					* if other server_queuereader read last metrics from queue and can't send it
+					*/
+					for (c = 0; c < self->secondariescnt; c++) {
+						if (self != self->secondaries[c] &&
+							__sync_bool_compare_and_swap(&(self->secondaries[c]->alive), 1, 1)) {
+							empty = 0;
+							break;
+						}
+					}
+					if (empty) {
 						break;
 					}
-				}
-				if (empty) {
+					usleep((100 + (rand() % 100)) * 1000);  /* 100ms - 200ms */
+				} else {
 					break;
 				}
-				usleep((100 + (rand() % 100)) * 1000);  /* 100ms - 200ms */
-			} else {
+			} else if (ret < 0) {
+				/* error, so slow down for a bit
+				* TODO replace with poll-like model */
+				usleep((300 + (rand() % 100)) * 1000);  /* 300ms - 400ms */
+			}
+			gettimeofday(&stop, NULL);
+			timeout -= timediff(start, stop);
+			if (timeout <= 0) {
 				break;
 			}
-		} else if (ret < 0) {
-			/* error, so slow down for a bit
-			 * TODO replace with poll-like model */
-			usleep((300 + (rand() % 100)) * 1000);  /* 300ms - 400ms */
-		}
-		gettimeofday(&stop, NULL);
-		timeout -= timediff(start, stop);
-		if (timeout <= 0) {
-			break;
 		}
 	}
 	__sync_bool_compare_and_swap(&(self->alive), 1, 0);
@@ -1760,7 +1762,7 @@ server_new(
 	ret->failover = 0;
 	ret->failure = 0;
 	ret->running = 0;
-	ret->keep_running = 1;
+	ret->keep_running = SERVER_KEEP_RUNNING;
 	ret->stallseq = 0;
 	ret->metrics = 0;
 	ret->dropped = 0;
@@ -1972,12 +1974,12 @@ server_send(server *s, const char *d, char force)
 }
 
 /* Iniciate shutdown cluster servers */
-void cluster_shutdown(cluster *c)
+void cluster_shutdown(cluster *c, int swap)
 {
 	servers *s = cluster_servers(c);
 
 	for ( ; s != NULL; s = s->next) {
-		server_shutdown(s->server);
+		server_shutdown(s->server, swap);
 	}
 }
 
@@ -1994,14 +1996,18 @@ void cluster_shutdown_wait(cluster *c)
  * Tells this server to finish sending pending items from its queue.
  */
 void
-server_shutdown(server *s)
+server_shutdown(server *s, int swap)
 {
-	__sync_bool_compare_and_swap(&(s->keep_running), 1, 0);
+	if (swap) {
+		__sync_bool_compare_and_swap(&(s->keep_running), SERVER_KEEP_RUNNING, SERVER_TRY_SWAP);
+	} else {
+		__sync_bool_compare_and_swap(&(s->keep_running), SERVER_KEEP_RUNNING, SERVER_TRY_SEND);
+	}
 }
 
 void server_shutdown_wait(server *s)
 {
-	int i;
+	int i, err;
 	/* wait for the secondaries to be stopped so we surely don't get
      * invalid reads when server_free is called */
 	if (s->secondariescnt > 0) {
@@ -2013,6 +2019,10 @@ void server_shutdown_wait(server *s)
 	   while (!__sync_bool_compare_and_swap(&(s->running), 0, 0))
 		   usleep(200 * 1000);
 	}
+	if (s->tid != 0 && (err = pthread_join(s->tid, NULL)) != 0)
+		logerr("%s:%u: failed to join server thread: %s\n",
+				s->ip, s->port, strerror(err));
+	s->tid = 0;
 }
 
 /**
@@ -2069,8 +2079,8 @@ server_swap_queue(server *l, server *r)
 	queue *t;
 	char shared;
 
-	assert(l->keep_running == 0 || l->tid == 0);
-	assert(r->keep_running == 0 || r->tid == 0);
+	assert(l->tid == 0);
+	assert(r->tid == 0);
 
 	t = l->queue;
 	shared = l->shared_queue;

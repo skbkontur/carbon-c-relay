@@ -27,6 +27,10 @@
 
 #define SERVER_MAX_SEND    10 /* max try write to socket for complete */
 
+#define SERVER_KEEP_RUNNING 1
+#define SERVER_TRY_SEND 0 /* send all items with timeout from queue before shutdown */
+#define SERVER_TRY_SWAP -1 /* don't send, if possible move items with swap shared queue */
+
 extern int queuefree_threshold_start;
 extern int queuefree_threshold_end;
 extern int shutdown_timeout;
@@ -53,7 +57,7 @@ void server_add_secondaries(server *d, server **sec, size_t cnt);
 void server_set_failover(server *d);
 void server_set_instance(server *d, char *inst);
 char server_send(server *s, const char *d, char force);
-void server_shutdown(server *s);
+void server_shutdown(server *s, int swap);
 void server_shutdown_wait(server *s);
 void server_free(server *s);
 void server_swap_queue(server *l, server *r);
