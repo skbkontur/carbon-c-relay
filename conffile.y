@@ -154,13 +154,10 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 		for (srvcnt = 0, w = $servers; w != NULL; w = w->next, srvcnt++)
 			;
 
-		if (($$ = ra_malloc(ralloc, sizeof(cluster))) == NULL) {
+		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
 			YYABORT;
 		}
-		$$->name = ra_strdup(ralloc, $name);
-		$$->next = NULL;
-		$$->type = $type.t;
 		switch ($$->type) {
 			case CARBON_CH:
 			case FNV1A_CH:
@@ -218,13 +215,10 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 	   	struct _clhost *w;
 		char *err;
 
-		if (($$ = ra_malloc(ralloc, sizeof(cluster))) == NULL) {
+		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
 			YYABORT;
 		}
-		$$->name = ra_strdup(ralloc, $name);
-		$$->next = NULL;
-		$$->type = $type.t;
 		switch ($$->type) {
 			case FILELOG:
 			case FILELOGIP:
@@ -434,13 +428,10 @@ match: crMATCH match_exprs[exprs] match_opt_validate[val]
 				YYABORT;
 			}
 			d->next = NULL;
-			if ((d->cl = ra_malloc(ralloc, sizeof(cluster))) == NULL) {
+			if ((d->cl = cluster_new(NULL, ralloc, VALIDATION, NULL, 0)) == NULL) {
 				logerr("out of memory\n");
 				YYABORT;
 			}
-			d->cl->name = NULL;
-			d->cl->type = VALIDATION;
-			d->cl->next = NULL;
 			d->cl->members.validation = ra_malloc(ralloc, sizeof(validate));
 			if (d->cl->members.validation == NULL) {
 				logerr("out of memory\n");
@@ -602,15 +593,12 @@ rewrite: crREWRITE crSTRING[expr] crINTO crSTRING[replacement]
 			YYERROR;
 		}
 		
-		cl = ra_malloc(ralloc, sizeof(cluster));
+		cl = cluster_new(NULL, ralloc, REWRITE, NULL, 0);
 		if (cl == NULL) {
 			logerr("out of memory\n");
 			YYABORT;
 		}
-		cl->type = REWRITE;
-		cl->name = NULL;
 		cl->members.replacement = ra_strdup(ralloc, $replacement);
-		cl->next = NULL;
 		if (cl->members.replacement == NULL) {
 			logerr("out of memory\n");
 			YYABORT;
@@ -665,14 +653,11 @@ aggregate: crAGGREGATE match_exprs2[exprs] crEVERY crINTVAL[intv] crSECONDS
 				YYERROR;
 			}
 
-			w = ra_malloc(ralloc, sizeof(cluster));
+			w = cluster_new(NULL, ralloc, AGGREGATION, NULL, 0);
 			if (w == NULL) {
 				logerr("malloc failed for aggregate\n");
 				YYABORT;
 			}
-			w->name = NULL;
-			w->type = AGGREGATION;
-			w->next = NULL;
 
 			a = aggregator_new($intv, $expire, $tswhen);
 			if (a == NULL) {

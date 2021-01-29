@@ -83,6 +83,7 @@ CTEST_DATA(router_test) {
 };
 
 CTEST_SETUP(router_test) {
+    shutdown_timeout = 10;
     data->r = router_new();
     data->retsaddr = NULL;
     data->rethint = NULL;

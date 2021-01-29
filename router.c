@@ -1018,6 +1018,8 @@ cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t que
 	cl->running = 0;
 	cl->keep_running = SERVER_KEEP_RUNNING;
 
+	cl->tid = 0;
+
 	cl->next = NULL;
 
 	return cl;
@@ -3079,23 +3081,9 @@ router_route_intern(
 						wassent = 1;
 					}	break;
 					case FAILOVER: {
-						/* queue at the first non-failing server */
-						unsigned short i;
-
+						/* queue to the shared queue, so use first server */
 						failif(retsize, *curlen + 1);
-						ret[*curlen].dest = NULL;
-						for (i = 0; i < d->cl->members.anyof->count; i++) {
-							server *s = d->cl->members.anyof->servers[i];
-							if (server_failed(s))
-								continue;
-							ret[*curlen].dest = s;
-							break;
-						}
-						if (ret[*curlen].dest == NULL)
-							/* all failed, take first server */
-							ret[*curlen].dest =
-								d->cl->members.anyof->servers[0];
-
+						ret[*curlen].dest = d->cl->members.anyof->servers[0];
 						produce_metric(ret[*curlen]);
 						set_metric(ret[*curlen]);
 						(*curlen)++;

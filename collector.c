@@ -42,6 +42,7 @@ collector_runner(void *s)
 {
 	int i;
 	size_t totticks;
+	size_t totwaits;
 	size_t totmetrics;
 	size_t totblackholes;
 	size_t totdiscards;
@@ -50,6 +51,7 @@ collector_runner(void *s)
 	size_t totdropped;
 	size_t totsleeps;
 	size_t ticks;
+	size_t waits;
 	size_t metrics;
 	size_t blackholes;
 	size_t discards;
@@ -72,6 +74,7 @@ collector_runner(void *s)
 	char *m = NULL;
 	size_t sizem = 0;
 	size_t (*s_ticks)(server *) = NULL;
+	size_t (*s_waits)(server *) = NULL;
 	size_t (*s_metrics)(server *) = NULL;
 	size_t (*s_stalls)(server *) = NULL;
 	size_t (*s_dropped)(server *) = NULL;
@@ -118,6 +121,7 @@ collector_runner(void *s)
 			/* setup functions to target what the user wants */
 			if (router_getcollectormode(prtr) == SUB) {
 				s_ticks = server_get_ticks_sub;
+				s_waits = server_get_waits_sub;
 				s_metrics = server_get_metrics_sub;
 				s_stalls = server_get_stalls_sub;
 				s_dropped = server_get_dropped_sub;
@@ -132,6 +136,7 @@ collector_runner(void *s)
 				a_dropped = aggregator_get_dropped_sub;
 			} else {
 				s_ticks = server_get_ticks;
+				s_ticks = server_get_waits;
 				s_metrics = server_get_metrics;
 				s_stalls = server_get_stalls;
 				s_dropped = server_get_dropped;
@@ -163,6 +168,7 @@ collector_runner(void *s)
 			continue;
 		nextcycle += collector_interval;
 		totticks = 0;
+		totwaits = 0;
 		totmetrics = 0;
 		totblackholes = 0;
 		totdiscards = 0;
@@ -205,7 +211,7 @@ collector_runner(void *s)
 				totsleeps, (size_t)now);
 		send(metric);
 
-#define send_server_metrics(ipbuf, ticks, metrics, queued, stalls, dropped, requeue) \
+#define send_server_metrics(ipbuf, ticks, waits, metrics, queued, stalls, dropped, requeue) \
 			snprintf(m, sizem, "destinations.%s.sent %zu %zu\n", \
 					ipbuf, metrics, (size_t)now); \
 			send(metric); \
@@ -223,6 +229,9 @@ collector_runner(void *s)
 			send(metric); \
 			snprintf(m, sizem, "destinations.%s.wallTime_us %zu %zu\n", \
 					ipbuf, ticks, (size_t)now); \
+			send(metric); \
+			snprintf(m, sizem, "destinations.%s.waitTime_us %zu %zu\n", \
+					ipbuf, waits, (size_t)now); \
 			send(metric);
 
 		totticks = 0;
@@ -234,12 +243,13 @@ collector_runner(void *s)
 		/* exclude internal_submission metrics from the totals to avoid
 		 * artificial doubles due to internal routing details */
 		ticks = s_ticks(submission);
+		waits = s_waits(submission);
 		metrics = s_metrics(submission);
 		queued = server_get_queue_len(submission);
 		stalls = s_stalls(submission);
 		dropped = s_dropped(submission);
 		send_server_metrics(server_ip(submission),
-				ticks, metrics, queued, stalls, dropped, 0ul);
+				ticks, waits, metrics, queued, stalls, dropped, 0ul);
 
 		for (i = 0; srvs[i] != NULL; i++) {
 			switch (server_ctype(srvs[i])) {
@@ -264,13 +274,14 @@ collector_runner(void *s)
 					*p = '_';
 
 			totticks += ticks = s_ticks(srvs[i]);
+			totwaits += waits = s_waits(srvs[i]);
 			totmetrics += metrics = s_metrics(srvs[i]);
 			totqueued += queued = server_get_queue_len(srvs[i]);
 			totstalls += stalls = s_stalls(srvs[i]);
 			totdropped += dropped = s_dropped(srvs[i]);
 			requeue = s_requeue(srvs[i]);
 			send_server_metrics(destbuf,
-					ticks, metrics, queued, stalls, dropped, requeue);
+					ticks, waits, metrics, queued, stalls, dropped, requeue);
 		}
 
 		snprintf(m, sizem, "metricsSent %zu %zu\n",
