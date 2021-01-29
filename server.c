@@ -41,7 +41,7 @@
 #include "cluster.h"
 
 #define FAIL_WAIT_COUNT   6  /* 6 * 250ms = 1.5s */
-#define DISCONNECT_WAIT_TIME   12  /* 12 * 250ms = 3s */
+#define DISCONNECT_WAIT_TIME   10 * 1000000  /* 10s */
 #define QUEUE_FREE_CRITICAL(FREE, s)  (FREE < s->qfree_threshold)
 
 int queuefree_threshold_start = 0;
@@ -80,6 +80,7 @@ struct _server {
 	size_t secondariescnt;
 	char failover:1;
 	struct timeval last;
+	struct timeval last_wait;
 	char failure; 	    /* full byte for atomic access */
 	char alive;         /* full byte for atomic access */
 	char running;       /* full byte for atomic access */
@@ -1005,6 +1006,7 @@ int server_connect(server *self)
 {
 	int args = 0;
 	gettimeofday(&self->last, NULL);
+	self->last_wait = self->last;
 	if (self->reresolve) {  /* can only be CON_UDP/CON_TCP */
 		struct addrinfo *saddr;
 		char sport[8];
@@ -1191,19 +1193,6 @@ int server_connect(server *self)
 						&args, sizeof(args)) != 0)
 				; /* ignore */
 
-#ifdef TCP_USER_TIMEOUT
-			/* break out of connections when no ACK is being
-			 * received for +- 10 seconds instead of
-			 * retransmitting for +- 15 minutes available on
-			 * linux >= 2.6.37
-			 * the 10 seconds is in line with the SO_SNDTIMEO
-			 * set on the socket below */
-			args = 10000 + (rand() % 300);
-			if (setsockopt(self->fd, IPPROTO_TCP, TCP_USER_TIMEOUT,
-						&args, sizeof(args)) != 0)
-				; /* ignore */
-#endif
-
 			/* if we reached up here, we're good to go, so don't
 			 * continue with the other addrinfos */
 			break;
@@ -1256,7 +1245,7 @@ static inline int server_secpos_alloc(server *self)
 }
 
 
-/* check for write ready 
+/* check for write ready - only for test
  * TODO: replace with poll on serveral servers fd in cluster threads for reduce cpu usage */
 int server_poll(server *self) {
 	int ret;
@@ -1284,9 +1273,9 @@ int server_poll(server *self) {
 
 static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char keep_running)
 {
-	ssize_t slen;
+	ssize_t slen, len = 0;
 	const char *metric, *m;
-	size_t len, mlen;
+	size_t mlen;
 	struct timeval start, stop;
 
 	if (self->fd == -1) {
@@ -1307,8 +1296,8 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 			server_disconnect(self);
 			return -1;
 		} else if (ufd->revents == 0) {
-			__sync_add_and_fetch(&(self->waits), timediff(self->last, start));
-			self->last = start;
+			__sync_add_and_fetch(&(self->waits), timediff(self->last_wait, start));
+			self->last_wait = start;
 			errno = EAGAIN;
 			return -1;
 		}
@@ -1342,6 +1331,8 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 						logerr("dropping metric: %s", *metric);
 					free((char *) metric);
 					__sync_add_and_fetch(&(self->dropped), 1);
+				} else {
+					self->len--;
 				}
 				break;
 			} else if (slen != mlen) {
@@ -1361,7 +1352,6 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 	}
 
 	if (self->len == 0) {
-		self->last = start;
 		return 0;
 	}
 
@@ -1392,14 +1382,14 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 
 	gettimeofday(&stop, NULL);
 	__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
-	self->last = start;
+	self->last = stop;
+	self->last_wait = stop;
 
 	if (self->fd == -1) {
 		server_back_unsended(self, q);
 		return -1;
-	} else {
-		return len;
 	}
+	return len;
 }
 
 static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, int fd)
@@ -1419,6 +1409,20 @@ static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, 
 	return NULL;
 }
 
+static void servers_check_timeouts(servers *ss, struct timeval now) {
+	servers *s;
+	for (s = ss; s != NULL; s = s->next) {
+		if (s->server->fd > -1) {
+			ssize_t duration = timediff(now, s->server->last);
+			if (duration >= DISCONNECT_WAIT_TIME) {
+				logout("timeout server %s:%u\n",
+						ss->server->ip, ss->server->port);
+				server_disconnect(s->server);
+			}
+		}
+	}
+}
+
 static void *
 cluster_queuereader(void *d)
 {
@@ -1429,7 +1433,7 @@ cluster_queuereader(void *d)
 	size_t n;
 	struct pollfd ufds[256];
 	int ret = 0, iotimeout = 600; /* connection timeout */
-	struct timeval start, stop;
+	struct timeval start, now;
 
 	start.tv_sec = 0;
 	start.tv_usec = 0;
@@ -1448,8 +1452,8 @@ cluster_queuereader(void *d)
 				/* shutdown initiated */
 				gettimeofday(&start, NULL);
 			} else {
-				gettimeofday(&stop, NULL);
-				if (timediff(start, stop) >= stimeout) {
+				gettimeofday(&now, NULL);
+				if (timediff(start, now) >= stimeout) {
 					break;
 				}
 				/* check for emthy queue */
@@ -1580,6 +1584,9 @@ cluster_queuereader(void *d)
 				}
 			}
 		}
+
+		gettimeofday(&now, NULL);
+		servers_check_timeouts(ss, now);
 	}
 
 	__sync_bool_compare_and_swap(&(self->running), 1, 0);
@@ -1779,6 +1786,8 @@ server_new(
 
 	ret->last.tv_sec = 0;
 	ret->last.tv_usec = 0;
+	ret->last_wait.tv_sec = 0;
+	ret->last_wait.tv_usec = 0;
 	ret->failover = 0;
 	ret->failure = 0;
 	ret->running = 0;
