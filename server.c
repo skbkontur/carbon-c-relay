@@ -83,6 +83,8 @@ struct _server {
 	queue *queue;
 	size_t bsize;
 	size_t qfree_threshold;
+	size_t threshold_start; /* qeueue threshold start */
+	size_t threshold_end;   /* qeueue threshold end */
 	short iotimeout;
 	unsigned int sockbufsize;
 	unsigned char maxstalls:SERVER_STALL_BITS;
@@ -1549,15 +1551,15 @@ cluster_queuereader(void *d)
 				} else {
 					overload = QUEUE_FREE_CRITICAL(qfree, ss->server);
 				}
-				if (ss->server->qfree_threshold != queuefree_threshold_start && ! overload) {
+				if (ss->server->qfree_threshold != ss->server->threshold_start && ! overload) {
 					/* threshold for cancel rebalance */
-					ss->server->qfree_threshold = queuefree_threshold_start;
+					ss->server->qfree_threshold = ss->server->threshold_start;
 					if (mode && MODE_DEBUG)
 						tracef("throttle end %s:%u: waiting for %zu metrics\n",
 								ss->server->ip, ss->server->port, queue_len(self->queue));
-				} else if (ss->server->qfree_threshold == queuefree_threshold_start && overload) {
+				} else if (ss->server->qfree_threshold == ss->server->threshold_start && overload) {
 					/* destination overloaded, set threshold for destination recovery */
-					ss->server->qfree_threshold = queuefree_threshold_end;
+					ss->server->qfree_threshold = ss->server->threshold_end;
 					if (mode && MODE_DEBUG)
 						tracef("throttle %s:%u: waiting for %zu metrics\n",
 								ss->server->ip, ss->server->port, queue_len(self->queue));
@@ -1598,15 +1600,15 @@ cluster_queuereader(void *d)
 							qfree_min = qfree;
 						}
 						overload = QUEUE_FREE_CRITICAL(qfree, s->server);
-						if (s->server->qfree_threshold != queuefree_threshold_start && ! overload) {
+						if (s->server->qfree_threshold != s->server->threshold_start && ! overload) {
 							/* threshold for cancel rebalance */
-							s->server->qfree_threshold = queuefree_threshold_start;
+							s->server->qfree_threshold = s->server->threshold_start;
 							if (mode && MODE_DEBUG)
 								tracef("throttle end %s:%u: waiting for %zu metrics\n",
 										s->server->ip, s->server->port, queue_len(s->server->queue));
-						} else if (s->server->qfree_threshold == queuefree_threshold_start && overload) {
+						} else if (s->server->qfree_threshold == ss->server->threshold_start && overload) {
 							/* destination overloaded, set threshold for destination recovery */
-							s->server->qfree_threshold = queuefree_threshold_end;
+							s->server->qfree_threshold = ss->server->threshold_end;
 							if (mode && MODE_DEBUG)
 								tracef("throttle %s:%u: waiting for %zu metrics\n",
 										s->server->ip, s->server->port, queue_len(s->server->queue));
@@ -1709,6 +1711,24 @@ server_queuereader(void *d)
 	return NULL;
 }
 
+int
+cluster_set_threshold(cluster *cl, int threshold_start, int threshold_end)
+{
+	if (threshold_start < 0 || threshold_start > 100 ||
+		threshold_end < 0 || threshold_end > 100) {
+		logerr("queue threshold needs to be a number >=0 and <=100 for cluster '%s'\n", cl->name);
+		return -1;
+	}
+	if (threshold_end < threshold_start) {
+		logerr("queue threshold end needs to be greater than start for cluster '%s'\n", cl->name);
+		return -1;
+	}
+	cl->threshold_start = threshold_start;
+	cl->threshold_end = threshold_end;
+
+	return 0;
+}
+
 /**
  * Allocate a new (outbound) server.  Effectively this means a thread
  * that reads from the queue and sends this as good as it can to the ip
@@ -1729,7 +1749,9 @@ server_new(
 		size_t bsize,
 		int maxstalls,
 		unsigned short iotimeout,
-		unsigned int sockbufsize)
+		unsigned int sockbufsize,
+		int threshold_start,
+		int threshold_end)
 {
 	unsigned short i;
 	server *ret;
@@ -1782,6 +1804,17 @@ server_new(
 	} else {
 		ret->shared_queue = 1;
 		ret->queue = q;
+	}
+
+	if (threshold_start == 0) {
+		ret->threshold_start = 2 * bsize;
+	} else {
+		ret->threshold_start = (double) threshold_start * queue_size(ret->queue) / 100;
+	}
+	if (threshold_end == 0) {
+		ret->threshold_end = 3 * bsize;
+	} else {
+		ret->threshold_end = (double) threshold_end * queue_size(ret->queue) / 100;
 	}
 
 	for (i = 0; i < SERVER_MAX_CONNECTIONS; i++) {

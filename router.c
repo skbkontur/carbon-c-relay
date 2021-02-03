@@ -676,7 +676,8 @@ router_add_server(
 					type, transport, proto, cl->server_connections, walk, hint,
 					ret->conf.queuesize, cl->queue, ret->conf.batchsize,
 					ret->conf.maxstalls, ret->conf.iotimeout,
-					ret->conf.sockbufsize);
+					ret->conf.sockbufsize,
+					cl->threshold_start, cl->threshold_end);
 			if (newserver == NULL) {
 				freeaddrinfo(saddrs);
 				if (hint)
@@ -2104,6 +2105,12 @@ router_printconfig(router *rtr, FILE *f, char pmode)
 		if (c->server_connections != 1) {
 			fprintf(f, "    connections %u\n", c->server_connections);
 		}
+		if (c->threshold_start != 0) {
+			fprintf(f, "    threshold_start %d\n", c->threshold_start);
+		}
+		if (c->threshold_end != 0) {
+			fprintf(f, "    threshold_end %d\n", c->threshold_end);
+		}
 		fprintf(f, "    ;\n");
 		if (pmode & PMODE_HASH) {
 			if (c->type == CARBON_CH ||
@@ -2404,6 +2411,11 @@ char router_swap(router *new, router *old)
 size_t
 router_queue_size(router *rtr) {
 	return rtr->conf.queuesize;
+}
+
+size_t
+router_batch_size(router *rtr) {
+	return rtr->conf.batchsize;
 }
 
 /**

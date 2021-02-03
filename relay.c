@@ -988,7 +988,7 @@ main(int argc, char * const argv[])
 	if ((internal_submission = server_new(
 					"internal", listenport, T_LINEMODE, W_PLAIN, CON_PIPE, 1,
 					NULL, NULL, 3000, NULL,
-					batchsize, maxstalls, iotimeout, sockbufsize)) == NULL)
+					batchsize, maxstalls, iotimeout, sockbufsize, 0, 0)) == NULL)
 	{
 		logerr("failed to create internal submission queue, shutting down\n");
 		keep_running = 0;

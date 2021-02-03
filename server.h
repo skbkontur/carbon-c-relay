@@ -53,7 +53,9 @@ server *server_new(
 		size_t batchsize,
 		int maxstalls,
 		unsigned short iotimeout,
-		unsigned int sockbufsize);
+		unsigned int sockbufsize,
+		int threshold_start,
+		int threshold_end);
 char server_cmp(server *s, struct addrinfo *saddr, const char *ip, unsigned short port, con_proto proto);
 char server_start(server *s);
 void server_add_secondaries(server *d, server **sec, size_t cnt);

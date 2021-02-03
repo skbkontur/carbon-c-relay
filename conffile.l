@@ -91,6 +91,8 @@ cluster				{
 <idcl>ssl				return crSSL;
 <idcl>=					return '=';
 <idcl>connections		return crCONNECTIONS;
+<idcl>threshold_start	return crTHRESHOLD_START;
+<idcl>threshold_end		return crTHRESHOLD_END;
 
 match				{
 						identstate = idma;

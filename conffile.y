@@ -63,6 +63,7 @@ struct _rcptr_trsp {
 %token crCLUSTER
 %token crFORWARD crANY_OF crFAILOVER crCARBON_CH crFNV1A_CH crJUMP_FNV1A_CH
 	crFILE crIP crREPLICATION crDYNAMIC crPROTO crUSEALL crUDP crTCP crCONNECTIONS
+	crTHRESHOLD_START crTHRESHOLD_END
 %type <enum clusttype> cluster_useall cluster_ch
 %type <struct _clust> cluster_type cluster_file
 %type <int> cluster_opt_repl cluster_opt_useall cluster_opt_dynamic
@@ -70,6 +71,8 @@ struct _rcptr_trsp {
 %type <con_type> cluster_opt_type
 %type <char *> cluster_opt_instance
 %type <int> server_connections
+%type <int> threshold_start
+%type <int> threshold_end
 %type <cluster *> cluster
 %type <struct _clhost *> cluster_host cluster_hosts cluster_opt_host
 	cluster_path cluster_paths cluster_opt_path
@@ -144,7 +147,7 @@ command: cluster
 	   ;
 
 /*** {{{ BEGIN cluster ***/
-cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] server_connections[connections]
+cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] server_connections[connections] threshold_start threshold_end
 	   {
 	   	struct _clhost *w;
 		char *err;
@@ -158,6 +161,9 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] serv
 		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
 			YYABORT;
+		}
+		if (cluster_set_threshold($$, $threshold_start, $threshold_end) == -1) {
+			exit(1);
 		}
 		switch ($$->type) {
 			case CARBON_CH:
@@ -213,7 +219,7 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] serv
 			YYERROR;
 		}
 	   }
-	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths] server_connections[connections]
+	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths] server_connections[connections] threshold_start threshold_end
 	   {
 	   	struct _clhost *w;
 		char *err;
@@ -221,6 +227,9 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] serv
 		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
 			YYABORT;
+		}
+		if (cluster_set_threshold($$, $threshold_start, $threshold_end) == -1) {
+			exit(1);
 		}
 		switch ($$->type) {
 			case FILELOG:
@@ -283,6 +292,14 @@ cluster_opt_dynamic:           { $$ = 0; }
 
 server_connections:               { $$ = 1; }
 				 | crCONNECTIONS crINTVAL[cnt] { $$ = $cnt; }
+				 ;
+
+threshold_start:                  { $$ = 0; }
+				 | crTHRESHOLD_START crINTVAL[cnt] { $$ = $cnt; }
+				 ;
+
+threshold_end:                  { $$ = 0; }
+				 | crTHRESHOLD_END crINTVAL[cnt] { $$ = $cnt; }
 				 ;
 
 cluster_file: crFILE crIP { $$.t = FILELOGIP; $$.ival = 0; }
