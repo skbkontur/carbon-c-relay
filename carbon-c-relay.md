@@ -116,6 +116,12 @@ These options control the behaviour of **carbon-c-relay**.
     The larger the queue, more metrics can be absorbed, but also more
     memory will be used by the relay.  The default queue size is *25000*.
 
+  * `-S` *threshold_start*
+    server queue free size threshold (for start rebalance) (pcnt), defaults to 0
+
+  * `-F` *threshold_end*
+    server queue free size threshold (for end rebalance) (pcnt), defaults to 0
+
   * `-L` *stalls*:
     Sets the max mount of stalls to *stalls* before the relay starts
     dropping metrics for a server.  When a queue fills up, the relay uses
@@ -219,6 +225,8 @@ cluster <name>
                                 [type linemode]
                                 [transport <plain | gzip | lz4 | snappy>
                                            [ssl]]> ...
+      [connections <count>]
+      [threshold_start <count> threshold_end <count>]
     ;
 
 cluster <name>
@@ -283,6 +291,8 @@ wrap the connection in a compression or encryption later or specify the
 use of UDP or TCP to connect to the remote server.  When omitted the
 connection defaults to an unwrapped TCP connection.  `type` can only be
 linemode at the moment.
+Optional `connections` can be used for connections number per server (default to 1).
+Optional `threshold_start` and `threshold_end` is clusterwide options like global `threshold_start` and `threshold_end`.
 
 DNS hostnames are resolved to a single address, according to the preference
 rules in [RFC 3484](https://www.ietf.org/rfc/rfc3484.txt).  The
