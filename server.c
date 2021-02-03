@@ -1310,7 +1310,7 @@ int server_poll(server *self, unsigned short n) {
 
 static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char keep_running, unsigned short n)
 {
-	ssize_t slen, len = 0;
+	ssize_t slen = 0, len = 0;
 	const char *metric, *m;
 	size_t mlen;
 	struct timeval start, stop;
