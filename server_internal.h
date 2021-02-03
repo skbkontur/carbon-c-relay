@@ -67,4 +67,11 @@ typedef struct _z_strm {
 	} hdl;
 } z_strm;
 
+queue *server_queue(server *s);
+int server_connect(server *self, unsigned short n);
+int server_disconnect(server *self, unsigned short n);
+z_strm *server_get_strm(server *s, unsigned short n);
+int server_poll(server *self, unsigned short n);
+void server_cleanup(server *s);
+
 #endif

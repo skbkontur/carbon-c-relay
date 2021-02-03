@@ -986,7 +986,7 @@ main(int argc, char * const argv[])
 	/* server used for delivering metrics produced inside the relay,
 	 * that is, the collector (statistics) */
 	if ((internal_submission = server_new(
-					"internal", listenport, T_LINEMODE, W_PLAIN, CON_PIPE,
+					"internal", listenport, T_LINEMODE, W_PLAIN, CON_PIPE, 1,
 					NULL, NULL, 3000, NULL,
 					batchsize, maxstalls, iotimeout, sockbufsize)) == NULL)
 	{

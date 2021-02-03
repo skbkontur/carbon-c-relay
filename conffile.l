@@ -90,6 +90,7 @@ cluster				{
 <idcl>snappy			return crSNAPPY;
 <idcl>ssl				return crSSL;
 <idcl>=					return '=';
+<idcl>connections		return crCONNECTIONS;
 
 match				{
 						identstate = idma;

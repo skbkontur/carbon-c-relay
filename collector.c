@@ -41,6 +41,7 @@ static void *
 collector_runner(void *s)
 {
 	int i;
+	unsigned short n;
 	size_t totticks;
 	size_t totwaits;
 	size_t totmetrics;
@@ -73,9 +74,9 @@ collector_runner(void *s)
 	char metric[METRIC_BUFSIZ];
 	char *m = NULL;
 	size_t sizem = 0;
-	size_t (*s_ticks)(server *) = NULL;
-	size_t (*s_waits)(server *) = NULL;
-	size_t (*s_metrics)(server *) = NULL;
+	size_t (*s_ticks)(server *, unsigned short n) = NULL;
+	size_t (*s_waits)(server *, unsigned short n) = NULL;
+	size_t (*s_metrics)(server *, unsigned short n) = NULL;
 	size_t (*s_stalls)(server *) = NULL;
 	size_t (*s_dropped)(server *) = NULL;
 	size_t (*s_requeue)(server *) = NULL;
@@ -136,7 +137,7 @@ collector_runner(void *s)
 				a_dropped = aggregator_get_dropped_sub;
 			} else {
 				s_ticks = server_get_ticks;
-				s_ticks = server_get_waits;
+				s_waits = server_get_waits;
 				s_metrics = server_get_metrics;
 				s_stalls = server_get_stalls;
 				s_dropped = server_get_dropped;
@@ -234,6 +235,17 @@ collector_runner(void *s)
 					ipbuf, waits, (size_t)now); \
 			send(metric);
 
+#define send_server_conn_metrics(ipbuf, n, ticks, waits, metrics) \
+			snprintf(m, sizem, "destinations.%s.conns.%u.sent %zu %zu\n", \
+					ipbuf, n, metrics, (size_t)now); \
+			send(metric); \
+			snprintf(m, sizem, "destinations.%s.conns.%u.wallTime_us %zu %zu\n", \
+					ipbuf, n, ticks, (size_t)now); \
+			send(metric); \
+			snprintf(m, sizem, "destinations.%s.conns.%u.waitTime_us %zu %zu\n", \
+					ipbuf, n, waits, (size_t)now); \
+			send(metric);
+
 		totticks = 0;
 		totmetrics = 0;
 		totqueued = 0;
@@ -242,9 +254,9 @@ collector_runner(void *s)
 
 		/* exclude internal_submission metrics from the totals to avoid
 		 * artificial doubles due to internal routing details */
-		ticks = s_ticks(submission);
-		waits = s_waits(submission);
-		metrics = s_metrics(submission);
+		ticks += s_ticks(submission, 0);
+		waits += s_waits(submission, 0);
+		metrics += s_metrics(submission, 0);
 		queued = server_get_queue_len(submission);
 		stalls = s_stalls(submission);
 		dropped = s_dropped(submission);
@@ -273,13 +285,29 @@ collector_runner(void *s)
 				if (*p == '.')
 					*p = '_';
 
-			totticks += ticks = s_ticks(srvs[i]);
-			totwaits += waits = s_waits(srvs[i]);
-			totmetrics += metrics = s_metrics(srvs[i]);
 			totqueued += queued = server_get_queue_len(srvs[i]);
 			totstalls += stalls = s_stalls(srvs[i]);
 			totdropped += dropped = s_dropped(srvs[i]);
 			requeue = s_requeue(srvs[i]);
+			if (server_get_connections(srvs[i]) > 1) {
+				ticks = 0;
+				waits = 0;
+				metrics = 0;
+				for (n = 0; n < server_get_connections(srvs[i]); n++) {
+					size_t nmetrics, nticks, nwaits;
+					ticks += nticks = s_ticks(srvs[i], n);
+					waits += nwaits = s_waits(srvs[i], n);
+					metrics += nmetrics = s_metrics(srvs[i], n);
+					send_server_conn_metrics(destbuf, n, nticks, nwaits, nmetrics);
+				}
+			} else {
+				ticks = s_ticks(srvs[i], n);
+				waits = s_waits(srvs[i], n);
+				metrics = s_metrics(srvs[i], n);
+			}
+			totticks += ticks;
+			totwaits += waits;
+			totmetrics += metrics;
 			send_server_metrics(destbuf,
 					ticks, waits, metrics, queued, stalls, dropped, requeue);
 		}
@@ -388,8 +416,11 @@ collector_writer(void *unused)
 			mpsdrop = totdrop = 0;
 			totqueue = 0;
 			for (j = 0; srvs[j] != NULL; j++) {
-				mpsout += server_get_metrics_sub(srvs[j]);
-				totout += server_get_metrics(srvs[j]);
+				unsigned short n;
+				for (n = 0; n < server_get_connections(srvs[j]); n++) {
+					mpsout += server_get_metrics_sub(srvs[j], n);
+					totout += server_get_metrics(srvs[j], n);
+				}
 
 				mpsdrop += server_get_dropped_sub(srvs[j]);
 				totdrop += server_get_dropped(srvs[j]);

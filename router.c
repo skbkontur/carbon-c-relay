@@ -673,7 +673,7 @@ router_add_server(
 		}
 		if (newserver == NULL) {
 			newserver = server_new(ip, port,
-					type, transport, proto, walk, hint,
+					type, transport, proto, cl->server_connections, walk, hint,
 					ret->conf.queuesize, cl->queue, ret->conf.batchsize,
 					ret->conf.maxstalls, ret->conf.iotimeout,
 					ret->conf.sockbufsize);
@@ -884,18 +884,21 @@ router_add_cluster(router *r, cluster *cl)
 		last = r->clusters;
 	last->next = cl;
 
-	// if (cl->type == FAILOVER && cl->queue == NULL) {
-	// 	/* shared queue */
-	// 	cl->queue = queue_new(r->conf.queuesize);
-	// 	if (cl->queue == NULL) {
-	// 		return ra_strdup(r->a, "cluster queue alloc failed");
-	// 	}
-	// } else {
-	// 	cl->queue = NULL;
-	// }
-
 	/* post checks/fixups */
-	if (cl->type == ANYOF || cl->type == FAILOVER) {
+	if (cl->type == FAILOVER) {
+		size_t i = 0;
+		cl->members.anyof->servers =
+			ra_malloc(r->a, sizeof(server *) * cl->members.anyof->count);
+		if (cl->members.anyof->servers == NULL) {
+			cluster_free(cl);
+			return ra_strdup(r->a, "malloc failed for failover servers");
+		}
+		for (w = cl->members.anyof->list; w != NULL; w = w->next)
+			cl->members.anyof->servers[i++] = w->server;
+		for (w = cl->members.anyof->list; w != NULL; w = w->next) {
+			server_set_failover(w->server);
+		}
+	} else if (cl->type == ANYOF) {
 		size_t i = 0;
 		cl->members.anyof->servers =
 			ra_malloc(r->a, sizeof(server *) * cl->members.anyof->count);
@@ -909,8 +912,6 @@ router_add_cluster(router *r, cluster *cl)
 			server_add_secondaries(w->server,
 					cl->members.anyof->servers,
 					cl->members.anyof->count);
-			if (cl->type == FAILOVER)
-				server_set_failover(w->server);
 		}
 	} else if (cl->type == CARBON_CH ||
 			cl->type == FNV1A_CH ||
@@ -2099,6 +2100,9 @@ router_printconfig(router *rtr, FILE *f, char pmode)
 						server_instance(s->server) ?
 							server_instance(s->server) : "",
 						PPROTO, PTYPE, PTRNSP);
+		}
+		if (c->server_connections != 1) {
+			fprintf(f, "    connections %u\n", c->server_connections);
 		}
 		fprintf(f, "    ;\n");
 		if (pmode & PMODE_HASH) {

@@ -48,29 +48,44 @@ int queuefree_threshold_start = 0;
 int queuefree_threshold_end = 0;
 int shutdown_timeout = 120; /* 120s */
 
+struct _servercon {
+	int fd;
+	z_strm *strm;
+	const char **batch; /* dequeued metrics */
+	size_t len; /* size of dequeued messages and written to buffer */
+	struct timeval last;
+	struct timeval last_wait;
+	char failure; 	    /* full byte for atomic access */
+	/* metrics */
+	size_t metrics;
+	size_t ticks;
+	size_t waits;
+	size_t prevmetrics;
+	size_t prevticks;
+	size_t prevwaits;	
+};
+
 struct _server {
 	const char *ip;
 	unsigned short port;
 	char *instance;
 	struct addrinfo *saddr;
 	struct addrinfo *hint;
-	int fd;
+	unsigned short nconns; /* connections per server */
+	struct _servercon conns[SERVER_MAX_CONNECTIONS];	
+	
 	char reresolve:1;
 	/* 
 	 * queue shared with other servers (for FAILOVER or LOAD BALANCING)
 	 * free queue in cluster/router cleanup
 	 */
 	char shared_queue:2;
-	z_strm *strm;
 	queue *queue;
 	size_t bsize;
 	size_t qfree_threshold;
 	short iotimeout;
 	unsigned int sockbufsize;
 	unsigned char maxstalls:SERVER_STALL_BITS;
-	const char **batch; /* dequeued metrics */
-	// size_t nlen; /* size of dequeued messages, but not sended (no buffer space), usually 0 or 1 */
-	size_t len; /* size of dequeued messages and written to buffer */
 	con_type type;
 	con_trnsp transport;
 	con_proto ctype;
@@ -79,24 +94,16 @@ struct _server {
 	size_t *secpos;
 	size_t secondariescnt;
 	char failover:1;
-	struct timeval last;
-	struct timeval last_wait;
-	char failure; 	    /* full byte for atomic access */
-	char alive;         /* full byte for atomic access */
+	char alive; 		/* incremented counter (each connection) for sending in progress */
 	char running;       /* full byte for atomic access */
 	char keep_running;  /* full byte for atomic access */
 	unsigned char stallseq;  /* full byte for atomic access */
-	size_t metrics;
+	/* metrics */
 	size_t dropped;
 	size_t stalls;
-	size_t ticks;
-	size_t waits;
 	size_t requeue;
-	size_t prevmetrics;
 	size_t prevdropped;
 	size_t prevstalls;
-	size_t prevticks;
-	size_t prevwaits;
 	size_t prevrequeue;
 };
 
@@ -182,27 +189,28 @@ sockerror(z_strm *strm, int rval)
 
 /* allocate new connection */
 static int
-socketnew(server *s, int osize) {
-	s->strm = malloc(sizeof(z_strm));
-	if (s->strm == NULL) {
+socketnew(server *s, int osize, unsigned short n) {
+	s->conns[n].strm = malloc(sizeof(z_strm));
+	if (s->conns[n].strm == NULL) {
 		logerr("failed to alloc socket stream: out of memory\n");
 		return -1;
 	}
-	s->strm->obufpos = 0;
-	s->strm->obuflen = 0;
-	s->strm->nextstrm = NULL;
+	s->conns[n].strm->obufpos = 0;
+	s->conns[n].strm->obuflen = 0;
+	s->conns[n].strm->nextstrm = NULL;
 
-	s->strm->obufsize = osize;
+	s->conns[n].strm->obufsize = osize;
 
-	s->strm->strmwrite = &sockwrite;
-	s->strm->strmflush = &sockflush;
-	s->strm->strmclose = &sockclose;
-	s->strm->strmerror = &sockerror;
-	s->strm->strmfree = &sockfree;
+	s->conns[n].strm->strmwrite = &sockwrite;
+	s->conns[n].strm->strmflush = &sockflush;
+	s->conns[n].strm->strmclose = &sockclose;
+	s->conns[n].strm->strmerror = &sockerror;
+	s->conns[n].strm->strmfree = &sockfree;
 
-	s->strm->obuf = malloc(s->strm->obufsize);
-	if (s->strm->obuf == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->obuf = malloc(s->conns[n].strm->obufsize);
+	if (s->conns[n].strm->obuf == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc socket stream buffer: out of memory\n");
 		return -1;
 	}
@@ -322,10 +330,11 @@ gziperror(z_strm *strm, int rval)
 
 /* alloc on new server */
 static int
-gzipnew(server *s, int osize) {
+gzipnew(server *s, int osize, unsigned short n) {
 	z_strm *gzstrm = malloc(sizeof(z_strm));
 	if (gzstrm == NULL) {
-		s->strm->strmfree(s->strm);
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc gzip stream: out of memory\n");
 		return -1;
 	}
@@ -336,20 +345,22 @@ gzipnew(server *s, int osize) {
 	gzstrm->strmfree = &gzipfree;
 	gzstrm->obufsize = osize;
 	gzstrm->obuf = NULL;
-	gzstrm->nextstrm = s->strm;
+	gzstrm->nextstrm = s->conns[n].strm;
 
-	s->strm = gzstrm;
+	s->conns[n].strm = gzstrm;
 
-	s->strm->hdl.gz = malloc(sizeof(z_stream));
-	if (s->strm->hdl.gz == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->hdl.gz = malloc(sizeof(z_stream));
+	if (s->conns[n].strm->hdl.gz == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc gzip stream: out of memory\n");
 		return -1;
 	}
 	
-	s->strm->obuf = malloc(s->strm->obufsize);
-	if (s->strm->obuf == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->obuf = malloc(s->conns[n].strm->obufsize);
+	if (s->conns[n].strm->obuf == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc gzip stream buf: out of memory\n");
 		return -1;
 	}
@@ -359,13 +370,13 @@ gzipnew(server *s, int osize) {
 
 /* setup on connect */
 int
-gzipsetup(server *s) {
-	s->strm->obuflen = 0;
-	s->strm->hdl.gz->zalloc = Z_NULL;
-	s->strm->hdl.gz->zfree = Z_NULL;
-	s->strm->hdl.gz->opaque = Z_NULL;
-	s->strm->hdl.gz->next_in = Z_NULL;
-	if (deflateInit2(s->strm->hdl.gz,
+gzipsetup(server *s, unsigned short n) {
+	s->conns[n].strm->obuflen = 0;
+	s->conns[n].strm->hdl.gz->zalloc = Z_NULL;
+	s->conns[n].strm->hdl.gz->zfree = Z_NULL;
+	s->conns[n].strm->hdl.gz->opaque = Z_NULL;
+	s->conns[n].strm->hdl.gz->next_in = Z_NULL;
+	if (deflateInit2(s->conns[n].strm->hdl.gz,
 			Z_DEFAULT_COMPRESSION,
 			Z_DEFLATED,
 			15 + 16,
@@ -466,10 +477,11 @@ lzerror(z_strm *strm, int rval)
 
 /* allocate new connection */
 static int
-lznew(server *s, int osize) {
+lznew(server *s, int osize, unsigned short n) {
 	z_strm *lzstrm = malloc(sizeof(z_strm));
 	if (lzstrm == NULL) {
-		s->strm->strmfree(s->strm);
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc lz4 stream: out of memory\n");
 		return -1;
 	}
@@ -479,23 +491,25 @@ lznew(server *s, int osize) {
 	lzstrm->strmclose = &lzclose;
 	lzstrm->strmerror = &lzerror;
 	lzstrm->strmfree = &lzfree;
-	lzstrm->nextstrm = s->strm;
+	lzstrm->nextstrm = s->conns[n].strm;
 
-	s->strm = lzstrm;
+	s->conns[n].strm = lzstrm;
 
-	s->strm->hdl.z.cbuf = NULL;
-	s->strm->obuf = malloc(s->strm->obufsize);
-	if (s->strm->obuf == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->hdl.z.cbuf = NULL;
+	s->conns[n].strm->obuf = malloc(s->conns[n].strm->obufsize);
+	if (s->conns[n].strm->obuf == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc gzip stream buf: out of memory\n");
 		return -1;
 	}
 
 	/* get the maximum size that should ever be required and allocate for it */
-	s->strm->hdl.z.cbuflen = LZ4F_compressBound(s->strm->obufsize, &lz4f_prefs);
-	if ((s->strm->hdl.z.cbuf = malloc(s->strm->hdl.z.cbuflen)) == NULL) {
-		s->strm->strmfree(s->strm);
-		logerr("Failed to allocate %lu bytes for compressed LZ4 data\n", s->strm->hdl.z.cbuflen);
+	s->conns[n].strm->hdl.z.cbuflen = LZ4F_compressBound(s->conns[n].strm->obufsize, &lz4f_prefs);
+	if ((s->conns[n].strm->hdl.z.cbuf = malloc(s->conns[n].strm->hdl.z.cbuflen)) == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
+		logerr("Failed to allocate %lu bytes for compressed LZ4 data\n", s->conns[n].strm->hdl.z.cbuflen);
 		return -1;
 	}
 
@@ -504,8 +518,8 @@ lznew(server *s, int osize) {
 
 /* setup on connect */
 int
-lzsetup(server *s) {
-	s->strm->obuflen = 0;
+lzsetup(server *s, unsigned short n) {
+	s->conns[n].strm->obuflen = 0;
 	return 0;
 }
 #endif
@@ -589,10 +603,11 @@ snappyerror(z_strm *strm, int rval)
 
 /* allocate new connection */
 static int
-snappynew(server *s, int osize) {
+snappynew(server *s, int osize, unsigned short n) {
 	z_strm *snpstrm = malloc(sizeof(z_strm));
 	if (snpstrm == NULL) {
-		s->strm->strmfree(s->strm);
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc snappy stream: out of memory\n");
 		return -1;
 	}
@@ -601,15 +616,16 @@ snappynew(server *s, int osize) {
 	snpstrm->strmclose = &snappyclose;
 	snpstrm->strmerror = &snappyerror;
 	snpstrm->strmfree = &snappyfree;
-	snpstrm->nextstrm = s->strm;
+	snpstrm->nextstrm = s->conns[n].strm;
 	snpstrm->obuflen = 0;
 
-	s->strm = snpstrm;
+	s->conns[n].strm = snpstrm;
 
-	s->strm->obufsize = METRIC_BUFSIZ;
-	s->strm->obuf = malloc(s->strm->obufsize);
-	if (s->strm->obuf == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->obufsize = METRIC_BUFSIZ;
+	s->conns[n].strm->obuf = malloc(s->conns[n].strm->obufsize);
+	if (s->conns[n].strm->obuf == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
+		s->conns[n].strm = NULL;
 		logerr("failed to alloc gzip stream buf: out of memory\n");
 		return -1;
 	}
@@ -619,8 +635,8 @@ snappynew(server *s, int osize) {
 
 /* setup on connect */
 int
-snappysetup(server *s) {
-	s->strm->obuflen = 0;
+snappysetup(server *s, unsigned short n) {
+	s->conns[n].strm->obuflen = 0;
 	return 0;
 }
 #endif
@@ -755,53 +771,53 @@ sslerror(z_strm *strm, int rval)
 }
 
 static int
-sslnew(server *s, int osize) {
+sslnew(server *s, int osize, unsigned short n) {
 	const SSL_METHOD *m = SSLv23_client_method();
-	s->strm = malloc(sizeof(z_strm));
-	if (s->strm == NULL) {
+	s->conns[n].strm = malloc(sizeof(z_strm));
+	if (s->conns[n].strm == NULL) {
 		logerr("failed to alloc SSL stream: out of memory\n");
 		return -1;
 	}
-	s->strm->strmwrite = &sslwrite;
-	s->strm->strmflush = &sslflush;
-	s->strm->strmclose = &sslclose;
-	s->strm->strmerror = &sslerror;
-	s->strm->strmfree = &sslfree;
+	s->conns[n].strm->strmwrite = &sslwrite;
+	s->conns[n].strm->strmflush = &sslflush;
+	s->conns[n].strm->strmclose = &sslclose;
+	s->conns[n].strm->strmerror = &sslerror;
+	s->conns[n].strm->strmfree = &sslfree;
 
-	s->strm->nextstrm = NULL;
-	s->strm->obuf = NULL;
-	s->strm->hdl.ssl = NULL;
-	s->strm->ctx = SSL_CTX_new(m);
+	s->conns[n].strm->nextstrm = NULL;
+	s->conns[n].strm->obuf = NULL;
+	s->conns[n].strm->hdl.ssl = NULL;
+	s->conns[n].strm->ctx = SSL_CTX_new(m);
 
 	if (sslCA != NULL) {
-		if (s->strm->ctx == NULL ||
-			SSL_CTX_load_verify_locations(s->strm->ctx,
+		if (s->conns[n].strm->ctx == NULL ||
+			SSL_CTX_load_verify_locations(s->conns[n].strm->ctx,
 											sslCAisdir ? NULL : sslCA,
 											sslCAisdir ? sslCA : NULL) == 0)
 		{
 			char *err = ERR_error_string(ERR_get_error(), NULL);
-			s->strm->strmfree(s->strm);
+			s->conns[n].strm->strmfree(s->conns[n].strm);
 			logerr("failed to load SSL verify locations from %s for "
 					"%s:%d: %s\n", sslCA, s->ip, s->port, err);
 			return -1;
 		}
 	}
-	SSL_CTX_set_verify(s->strm->ctx, SSL_VERIFY_PEER, NULL);
+	SSL_CTX_set_verify(s->conns[n].strm->ctx, SSL_VERIFY_PEER, NULL);
 
-	s->strm->hdl.ssl = SSL_new(s->strm->ctx);
-	if (s->strm->hdl.ssl == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->hdl.ssl = SSL_new(s->conns[n].strm->ctx);
+	if (s->conns[n].strm->hdl.ssl == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
 		logerr("failed to alloc SSL stream: out of memory\n");
 		return -1;
 	}
 
-	s->strm->obufsize = osize;
-	s->strm->obuflen = 0;
-	s->strm->obufpos = 0;
+	s->conns[n].strm->obufsize = osize;
+	s->conns[n].strm->obuflen = 0;
+	s->conns[n].strm->obufpos = 0;
 
-	s->strm->obuf = malloc(s->strm->obufsize);
-	if (s->strm->obuf == NULL) {
-		s->strm->strmfree(s->strm);
+	s->conns[n].strm->obuf = malloc(s->conns[n].strm->obufsize);
+	if (s->conns[n].strm->obuf == NULL) {
+		s->conns[n].strm->strmfree(s->conns[n].strm);
 		logerr("failed to alloc socket stream buffer: out of memory\n");
 		return -1;
 	}
@@ -810,18 +826,24 @@ sslnew(server *s, int osize) {
 }
 #endif
 
-/* only for internal tests, not used in code */
-z_strm *
-server_get_strm(server *s)
+unsigned short
+server_get_connections(server *s)
 {
-	return s->strm;
+	return s->nconns;
 }
 
-static inline char server_add_failure(server *self) {
-	char failure = __sync_fetch_and_add(&(self->failure), 1);
+/* only for internal tests, not used in code */
+z_strm *
+server_get_strm(server *s, unsigned short n)
+{
+	return s->conns[n].strm;
+}
+
+static inline char server_add_failure(server *s, unsigned short n) {
+	char failure = __sync_fetch_and_add(&(s->conns[n].failure), 1);
 	if (failure > 100) {
 		/* prevent char overflow */
-		__sync_fetch_and_sub(&(self->failure), 20);
+		__sync_fetch_and_sub(&(s->conns[n].failure), FAIL_WAIT_COUNT + 1);
 	}
 
 	return failure;
@@ -831,12 +853,12 @@ static inline char server_add_failure(server *self) {
  * Returns unsended metrics back to the queue.
  */
 static void
-server_back_unsended(server *self, queue *q)
+server_back_unsended(server *self, queue *q, unsigned short n)
 {
-	if (self->len > 0) {
+	if (self->conns[n].len > 0) {
 		size_t i;
-		for (i = self->len - 1; i >= 0; i--) {
-			const char *metric = self->batch[i];
+		for (i = self->conns[n].len - 1; i >= 0; i--) {
+			const char *metric = self->conns[n].batch[i];
 			char ret = queue_putback(q, metric);
 			if (ret == 0 && q != self->queue) {
 				ret = queue_putback(self->queue, metric);
@@ -848,19 +870,32 @@ server_back_unsended(server *self, queue *q)
 				__sync_add_and_fetch(&(self->dropped), 1);
 			}
 		}
-		self->len = 0;
+		self->conns[n].len = 0;
 	}
 }
 
 int
-server_disconnect(server *self) {
-	if (self->fd != -1) {
-		int ret = self->strm->strmclose(self->strm);
-		server_back_unsended(self, self->queue);		
-		self->fd = -1;
+server_disconnect(server *self, unsigned short n) {
+	if (self->conns[n].fd != -1) {
+		int ret = self->conns[n].strm->strmclose(self->conns[n].strm);
+		server_back_unsended(self, self->queue, n);
+		self->conns[n].fd = -1;
 		return ret;
 	} else {
 		return 0;
+	}
+}
+
+void
+cluster_disconnect(cluster *c) {
+	servers *ss = cluster_servers(c);
+	servers *s;
+
+	for (s = ss; s != NULL; s = s->next) {
+		size_t i;
+		for (i = 0; i < s->server->nconns; i++) {
+			server_disconnect(s->server, i);
+		}
 	}
 }
 
@@ -875,7 +910,7 @@ int socket_set_blocking(int fd, int blocking) {
 }
 
 /* call after connect success */
-int server_setup(server *self) {
+int server_setup(server *self, unsigned short n) {
 #if defined(HAVE_SSL) || defined(HAVE_GZIP) || defined(HAVE_LZ4) || defined(HAVE_SNAPPY)
 	int compress_type = self->transport & 0xFFFF;
 #endif
@@ -884,11 +919,11 @@ int server_setup(server *self) {
 	 * quickly than the kernel would give up */
 	timeout.tv_sec = 10;
 	timeout.tv_usec = (rand() % 300) * 1000;
-	if (setsockopt(self->fd, SOL_SOCKET, SO_SNDTIMEO,
+	if (setsockopt(self->conns[n].fd, SOL_SOCKET, SO_SNDTIMEO,
 				&timeout, sizeof(timeout)) != 0)
 		; /* ignore */
 	if (self->sockbufsize > 0)
-		if (setsockopt(self->fd, SOL_SOCKET, SO_SNDBUF,
+		if (setsockopt(self->conns[n].fd, SOL_SOCKET, SO_SNDBUF,
 					&self->sockbufsize, sizeof(self->sockbufsize)) != 0)
 			; /* ignore */
 
@@ -904,30 +939,30 @@ int server_setup(server *self) {
 
 #ifdef HAVE_GZIP
 	if (compress_type == W_GZIP) {
-		if (gzipsetup(self) == -1) {
-			server_add_failure(self);
-			close(self->fd);
-			self->fd = -1;
+		if (gzipsetup(self, n) == -1) {
+			server_add_failure(self, n);
+			close(self->conns[n].fd);
+			self->conns[n].fd = -1;
 			return -1;
 		}
 	}
 #endif
 #ifdef HAVE_LZ4
 	if (compress_type == W_LZ4) {
-		if (lzsetup(self) == -1) {
-			server_add_failure(self);
-			close(self->fd);
-			self->fd = -1;
+		if (lzsetup(self, n) == -1) {
+			server_add_failure(self, n);
+			close(self->conns[n].fd);
+			self->conns[n].fd = -1;
 			return -1;
 		}
 	}
 #endif
 #ifdef HAVE_SNAPPY
 	if (compress_type == W_SNAPPY) {
-		if (snappysetup(self) == -1) {
-			server_add_failure(self);
-			close(self->fd);
-			self->fd = -1;
+		if (snappysetup(self, n) == -1) {
+			server_add_failure(self, n);
+			close(self->conns[n].fd);
+			self->conns[n].fd = -1;
 			return -1;
 		}
 	}
@@ -938,52 +973,52 @@ int server_setup(server *self) {
 		z_strm *sstrm;
 
 		if (compress_type == W_PLAIN) { /* just SSL, nothing else */
-			sstrm = self->strm;
+			sstrm = self->conns[n].strm;
 		} else {
-			sstrm = self->strm->nextstrm;
+			sstrm = self->conns[n].strm->nextstrm;
 		}
 		sstrm->obuflen = 0;
 
 		/* make socket blocking again */
-		if (socket_set_blocking(self->fd, 1) < 0) {
-			server_add_failure(self);
+		if (socket_set_blocking(self->conns[n].fd, 1) < 0) {
+			server_add_failure(self, n);
 			logerr("failed to remove socket non-blocking "
 					"mode: %s\n", strerror(errno));
-			close(self->fd);
-			self->fd = -1;
+			close(self->conns[n].fd);
+			self->conns[n].fd = -1;
 			return -1;
 		}
 		SSL_set_tlsext_host_name(sstrm->hdl.ssl, self->ip);
-		if (SSL_set_fd(sstrm->hdl.ssl, self->fd) == 0) {
-			server_add_failure(self);
+		if (SSL_set_fd(sstrm->hdl.ssl, self->conns[n].fd) == 0) {
+			server_add_failure(self, n);
 			logerr("failed to SSL_set_fd: %s\n",
 					ERR_reason_error_string(ERR_get_error()));
 			sstrm->strmclose(sstrm);
-			self->fd = -1;
+			self->conns[n].fd = -1;
 			return -1;
 		}
 		if ((rv = SSL_connect(sstrm->hdl.ssl)) != 1) {
-			server_add_failure(self);
+			server_add_failure(self, n);
 			logerr("failed to connect ssl stream: %s\n",
 					sslerror(sstrm, rv));
 			sstrm->strmclose(sstrm);
-			self->fd = -1;
+			self->conns[n].fd = -1;
 			return -1;
 		}
 		if ((rv = SSL_get_verify_result(sstrm->hdl.ssl)) != X509_V_OK) {
-			server_add_failure(self);
+			server_add_failure(self, n);
 			logerr("failed to verify ssl certificate: %s\n",
 					sslerror(sstrm, rv));
 			sstrm->strmclose(sstrm);
-			self->fd = -1;
+			self->conns[n].fd = -1;
 			return -1;
 		}
-		if (socket_set_blocking(self->fd, 0) < 0) {
-			server_add_failure(self);
+		if (socket_set_blocking(self->conns[n].fd, 0) < 0) {
+			server_add_failure(self, n);
 			logerr("failed to set socket non-blocking mode: %s\n",
 					strerror(errno));
-			close(self->fd);
-			self->fd = -1;
+			close(self->conns[n].fd);
+			self->conns[n].fd = -1;
 			return -1;
 		}
 	} else
@@ -992,21 +1027,21 @@ int server_setup(server *self) {
 		z_strm *pstrm;
 
 		if (self->transport == W_PLAIN) { /* just plain socket */
-			pstrm = self->strm;
+			pstrm = self->conns[n].strm;
 		} else {
-			pstrm = self->strm->nextstrm;
+			pstrm = self->conns[n].strm->nextstrm;
 			pstrm->obuflen = 0;			
 		}
-		pstrm->hdl.sock = self->fd;
+		pstrm->hdl.sock = self->conns[n].fd;
 	}
-	return self->fd;	
+	return self->conns[n].fd;	
 }
 
-int server_connect(server *self)
+int server_connect(server *self, unsigned short n)
 {
 	int args = 0;
-	gettimeofday(&self->last, NULL);
-	self->last_wait = self->last;
+	gettimeofday(&self->conns[n].last, NULL);
+	self->conns[n].last_wait = self->conns[n].last;
 	if (self->reresolve) {  /* can only be CON_UDP/CON_TCP */
 		struct addrinfo *saddr;
 		char sport[8];
@@ -1019,7 +1054,7 @@ int server_connect(server *self)
 		if (getaddrinfo(self->ip, sport, self->hint, &saddr) == 0) {
 			self->saddr = saddr;
 		} else {
-			if (__sync_fetch_and_add(&(self->failure), 1) == 0)
+			if (__sync_fetch_and_add(&(self->conns[n].failure), 1) == 0)
 				logerr("failed to resolve %s:%u, server unavailable\n",
 						self->ip, self->port);
 			self->saddr = NULL;
@@ -1031,23 +1066,23 @@ int server_connect(server *self)
 		int intconn[2];
 		connection *conn;
 		if (pipe(intconn) < 0) {
-			if (server_add_failure(self) == 0)
+			if (server_add_failure(self, n) == 0)
 				logerr("failed to create pipe: %s\n", strerror(errno));
 			return -1;
 		}
 		conn = dispatch_addconnection(intconn[0], NULL, dispatch_worker_with_low_connections(), 0, 1);
 		if (conn == NULL) {
-			if (server_add_failure(self) == 0)
+			if (server_add_failure(self, n) == 0)
 				logerr("failed to add pipe: %s\n", strerror(errno));
 			return -1;
 		}
-		self->fd = intconn[1];
+		self->conns[n].fd = intconn[1];
 	} else if (self->ctype == CON_FILE) {
-		if ((self->fd = open(self->ip,
+		if ((self->conns[n].fd = open(self->ip,
 						O_WRONLY | O_APPEND | O_CREAT,
 						S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) < 0)
 		{
-			if (server_add_failure(self) == 0)
+			if (server_add_failure(self, n) == 0)
 				logerr("failed to open file '%s': %s\n",
 						self->ip, strerror(errno));
 			return -1;
@@ -1056,24 +1091,24 @@ int server_connect(server *self)
 		struct addrinfo *walk;
 
 		for (walk = self->saddr; walk != NULL; walk = walk->ai_next) {
-			if ((self->fd = socket(walk->ai_family,
+			if ((self->conns[n].fd = socket(walk->ai_family,
 							walk->ai_socktype,
 							walk->ai_protocol)) < 0)
 			{
 				if (walk->ai_next == NULL &&
-						server_add_failure(self) == 0)
+						server_add_failure(self, n) == 0)
 					logerr("failed to create udp socket: %s\n",
 							strerror(errno));
 				return -1;
 			}
-			if (connect(self->fd, walk->ai_addr, walk->ai_addrlen) < 0)
+			if (connect(self->conns[n].fd, walk->ai_addr, walk->ai_addrlen) < 0)
 			{
 				if (walk->ai_next == NULL &&
-						server_add_failure(self) == 0)
+						server_add_failure(self, n) == 0)
 					logerr("failed to connect udp socket: %s\n",
 							strerror(errno));
-				close(self->fd);
-				self->fd = -1;
+				close(self->conns[n].fd);
+				self->conns[n].fd = -1;
 				return -1;
 			}
 
@@ -1082,21 +1117,21 @@ int server_connect(server *self)
 		}
 		/* if this didn't resolve to anything, treat as failure */
 		if (self->saddr == NULL)
-			server_add_failure(self);
+			server_add_failure(self, n);
 		/* if all addrinfos failed, try again later */
-		if (self->fd < 0)
+		if (self->conns[n].fd < 0)
 			return -1;
 	} else {  /* CON_TCP */
 		int ret;
 		struct addrinfo *walk;
 
 		for (walk = self->saddr; walk != NULL; walk = walk->ai_next) {
-			if ((self->fd = socket(walk->ai_family,
+			if ((self->conns[n].fd = socket(walk->ai_family,
 							walk->ai_socktype,
 							walk->ai_protocol)) < 0)
 			{
 				if (walk->ai_next == NULL &&
-						server_add_failure(self) == 0)
+						server_add_failure(self, n) == 0)
 					logerr("failed to create socket: %s\n",
 							strerror(errno));
 				return -1;
@@ -1104,52 +1139,52 @@ int server_connect(server *self)
 
 			/* put socket in non-blocking mode such that we can
 			 * poll() (time-out) on the connect() call */
-			if (socket_set_blocking(self->fd, 0) < 0) {
-				server_add_failure(self);
+			if (socket_set_blocking(self->conns[n].fd, 0) < 0) {
+				server_add_failure(self, n);
 				logerr("failed to set socket non-blocking mode: %s\n",
 						strerror(errno));
-				close(self->fd);
-				self->fd = -1;
+				close(self->conns[n].fd);
+				self->conns[n].fd = -1;
 				return -1;
 			}
-			ret = connect(self->fd, walk->ai_addr, walk->ai_addrlen);
+			ret = connect(self->conns[n].fd, walk->ai_addr, walk->ai_addrlen);
 
 			if (ret < 0 && errno == EINPROGRESS) {
 				/* TODO - skip, wait in queueread */
 				/* wait for connection to succeed if the OS thinks
 				 * it can successed */
 				struct pollfd ufds[1];
-				ufds[0].fd = self->fd;
+				ufds[0].fd = self->conns[n].fd;
 				ufds[0].events = POLLIN | POLLOUT;
 				ret = poll(ufds, 1, self->iotimeout + (rand() % 100));
 				if (ret == 0) {
 					/* time limit expired */
 					if (walk->ai_next == NULL &&
-							server_add_failure(self) == 0)
+							server_add_failure(self, n) == 0)
 						logerr("failed to connect() to "
-								"%s:%u: Operation timed out\n",
-								self->ip, self->port);
-					close(self->fd);
-					self->fd = -1;
+								"%s:%u (%u): Operation timed out\n",
+								self->ip, self->port, n);
+					close(self->conns[n].fd);
+					self->conns[n].fd = -1;
 					return -1;
 				} else if (ret < 0) {
 					/* some select error occurred */
 					if (walk->ai_next &&
-							server_add_failure(self) == 0)
-						logerr("failed to poll() for %s:%u: %s\n",
-								self->ip, self->port, strerror(errno));
-					close(self->fd);
-					self->fd = -1;
+							server_add_failure(self, n) == 0)
+						logerr("failed to poll() for %s:%u (%u): %s\n",
+								self->ip, self->port, n, strerror(errno));
+					close(self->conns[n].fd);
+					self->conns[n].fd = -1;
 					return -1;
 				} else {
 					if (ufds[0].revents & POLLHUP) {
 						if (walk->ai_next == NULL &&
-								server_add_failure(self) == 0)
-							logerr("failed to connect() for %s:%u: "
+								server_add_failure(self, n) == 0)
+							logerr("failed to connect() for %s:%u (%u): "
 									"Connection refused\n",
-									self->ip, self->port);
-						close(self->fd);
-						self->fd = -1;
+									self->ip, self->port, n);
+						close(self->conns[n].fd);
+						self->conns[n].fd = -1;
 						return -1;
 					}
 					/*
@@ -1167,14 +1202,14 @@ int server_connect(server *self)
 				}
 			} else if (ret < 0) {
 				if (walk->ai_next == NULL &&
-						server_add_failure(self) == 0)
+						server_add_failure(self, n) == 0)
 				{
-					logerr("failed to connect() to %s:%u: %s\n",
-							self->ip, self->port, strerror(errno));
+					logerr("failed to connect() to %s:%u (%u): %s\n",
+							self->ip, self->port, n, strerror(errno));
 					dispatch_check_rlimit_and_warn();
 				}
-				close(self->fd);
-				self->fd = -1;
+				close(self->conns[n].fd);
+				self->conns[n].fd = -1;
 				return -1;
 			}
 
@@ -1189,7 +1224,7 @@ int server_connect(server *self)
 
 			/* disable Nagle's algorithm, issue #208 */
 			args = 1;
-			if (setsockopt(self->fd, IPPROTO_TCP, TCP_NODELAY,
+			if (setsockopt(self->conns[n].fd, IPPROTO_TCP, TCP_NODELAY,
 						&args, sizeof(args)) != 0)
 				; /* ignore */
 
@@ -1199,13 +1234,13 @@ int server_connect(server *self)
 		}
 		/* if this didn't resolve to anything, treat as failure */
 		if (self->saddr == NULL)
-			server_add_failure(self);
+			server_add_failure(self, n);
 		/* all available addrinfos failed on us */
-		if (self->fd < 0)
+		if (self->conns[n].fd < 0)
 			return -1;
 	}
 
-	return server_setup(self);
+	return server_setup(self, n);
 }
 
 queue *server_queue(server *s)
@@ -1247,38 +1282,38 @@ static inline int server_secpos_alloc(server *self)
 
 /* check for write ready - only for test
  * TODO: replace with poll on serveral servers fd in cluster threads for reduce cpu usage */
-int server_poll(server *self) {
+int server_poll(server *self, unsigned short n) {
 	int ret;
 	struct pollfd ufd;
 
-	ufd.fd = self->fd;
+	ufd.fd = self->conns[n].fd;
 	ufd.events = POLLOUT;
 	ret = poll(&ufd, 1, 10000);
 	if (ret == 0) {
 		/* timeout */
-		logerr("failed to write %s:%u, server timeout\n", self->ip, self->port);
-		server_disconnect(self);
+		logerr("failed to write %s:%u (%u), server timeout\n", self->ip, self->port, n);
+		server_disconnect(self, n);
 	} else if (ret == -1) {
-		logerr("failed to write %s:%u, server poll error: %s\n", self->ip, self->port, strerror(errno));
-		server_disconnect(self);
+		logerr("failed to write %s:%u (%u), server poll error: %s\n", self->ip, self->port, n, strerror(errno));
+		server_disconnect(self, n);
 	} else if (ufd.revents & POLLHUP) {
-		logerr("failed to write %s:%u, server connection hungup\n", self->ip, self->port);
-		server_disconnect(self);
+		logerr("failed to write %s:%u (%u), server connection hungup\n", self->ip, self->port, n);
+		server_disconnect(self, n);
 	} else if (!(ufd.revents & POLLOUT)) {
-		logerr("failed to write %s:%u, server poll revents: %d\n", self->ip, self->port, ufd.revents);
-		server_disconnect(self);
+		logerr("failed to write %s:%u (%u), server poll revents: %d\n", self->ip, self->port, n, ufd.revents);
+		server_disconnect(self, n);
 	}
 	return ret;
 }
 
-static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char keep_running)
+static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char keep_running, unsigned short n)
 {
 	ssize_t slen, len = 0;
 	const char *metric, *m;
 	size_t mlen;
 	struct timeval start, stop;
 
-	if (self->fd == -1) {
+	if (self->conns[n].fd == -1) {
 		errno = ENOTCONN;
 		return -1;
 	}
@@ -1286,18 +1321,18 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 	gettimeofday(&start, NULL);
 	if (ufd) {
 		if (ufd->revents & POLLHUP) {
-			logerr("failed to write %s:%u, server connection hungup\n",
-					self->ip, self->port);
-			server_disconnect(self);
+			logerr("failed to write %s:%u (%u), server connection hungup\n",
+					self->ip, self->port, n);
+			server_disconnect(self, n);
 			return -1;
 		} else if (!(ufd->revents & POLLOUT)) {
-			logerr("failed to write %s:%u, server poll revents: %d\n",
-					self->ip, self->port, ufd->revents);
-			server_disconnect(self);
+			logerr("failed to write %s:%u (%u), server poll revents: %d\n",
+					self->ip, self->port, n, ufd->revents);
+			server_disconnect(self, n);
 			return -1;
 		} else if (ufd->revents == 0) {
-			__sync_add_and_fetch(&(self->waits), timediff(self->last_wait, start));
-			self->last_wait = start;
+			__sync_add_and_fetch(&(self->conns[n].waits), timediff(self->conns[n].last_wait, start));
+			self->conns[n].last_wait = start;
 			errno = EAGAIN;
 			return -1;
 		}
@@ -1313,17 +1348,18 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 		}
 	}
 
-	if (self->len == 0) {
-		while (self->len < self->bsize) {
+	if (self->conns[n].len == 0) {
+		__sync_fetch_and_add(&(self->alive), 1);
+		while (self->conns[n].len < self->bsize) {
 			metric = queue_dequeue(q);
 			if (metric == NULL) {
 				break;
 			}
 			mlen = *(size_t *)metric;
 			m = metric + sizeof(size_t);
-			self->batch[self->len] = metric;
-			self->len++;
-			slen = self->strm->strmwrite(self->strm, m, mlen);
+			self->conns[n].batch[self->conns[n].len] = metric;
+			self->conns[n].len++;
+			slen = self->conns[n].strm->strmwrite(self->conns[n].strm, m, mlen);
 			if (slen == -1 && (errno == ENOBUFS || errno == EAGAIN || errno == EWOULDBLOCK)) {
 				/* flush and return last message back to the queue */
 				if (queue_putback(q, metric) == 0) {
@@ -1332,7 +1368,7 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 					free((char *) metric);
 					__sync_add_and_fetch(&(self->dropped), 1);
 				} else {
-					self->len--;
+					self->conns[n].len--;
 				}
 				break;
 			} else if (slen != mlen) {
@@ -1340,53 +1376,58 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 				 * close connection regardless so we don't get
 				 * synchonisation problems */
 				if (self->ctype != CON_UDP &&
-						server_add_failure(self) == 0)
-					logerr("failed to write() to %s:%u: %s\n",
-							self->ip, self->port,
+						server_add_failure(self, n) == 0)
+					logerr("failed to write() to %s:%u (%u): %s\n",
+							self->ip, self->port, n,
 							(slen < 0 ?
-								self->strm->strmerror(self->strm, slen) :
+								self->conns[n].strm->strmerror(self->conns[n].strm, slen) :
 								"incomplete write"));
-				server_disconnect(self);
+				server_disconnect(self, n);
+				break;
 			}
+
+		}
+
+		if (self->conns[n].len == 0) {
+			__sync_fetch_and_sub(&(self->alive), 1);
+			return 0;
 		}
 	}
 
-	if (self->len == 0) {
-		return 0;
-	}
 
-	if (self->fd != -1) {
-		if (self->strm->strmflush(self->strm) == -1) {
+	if (self->conns[n].fd != -1) {
+		if (self->conns[n].strm->strmflush(self->conns[n].strm) == -1) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				return -1;
 			}
 			if (self->ctype != CON_UDP &&
-					server_add_failure(self) == 0)
-						logerr("failed to flush() to %s:%u: %s\n",
-								self->ip, self->port,
+					server_add_failure(self, n) == 0)
+						logerr("failed to flush() to %s:%u (%u): %s\n",
+								self->ip, self->port, n,
 								(slen < 0 ?
-									self->strm->strmerror(self->strm, slen) :
+									self->conns[n].strm->strmerror(self->conns[n].strm, slen) :
 									"flush error"));
-			server_disconnect(self);
+			server_disconnect(self, n);
 		} else {
-			if (!__sync_bool_compare_and_swap(&(self->failure), 0, 0)) {
+			if (!__sync_bool_compare_and_swap(&(self->conns[n].failure), 0, 0)) {
 				if (self->ctype != CON_UDP)
-					logerr("server %s:%u: OK\n", self->ip, self->port);
-				__sync_and_and_fetch(&(self->failure), 0);
+					logerr("server %s:%u (%u): OK\n", self->ip, self->port, n);
+				__sync_and_and_fetch(&(self->conns[n].failure), 0);
 			}
-			__sync_add_and_fetch(&(self->metrics), self->len);
-			len = self->len;
-			self->len = 0;
+			__sync_add_and_fetch(&(self->conns[n].metrics), self->conns[n].len);
+			len = self->conns[n].len;
+			self->conns[n].len = 0;
 		}
 	}
 
+	__sync_fetch_and_sub(&(self->alive), 1);
 	gettimeofday(&stop, NULL);
-	__sync_add_and_fetch(&(self->ticks), timediff(start, stop));
-	self->last = stop;
-	self->last_wait = stop;
+	__sync_add_and_fetch(&(self->conns[n].ticks), timediff(start, stop));
+	self->conns[n].last = stop;
+	self->conns[n].last_wait = stop;
 
-	if (self->fd == -1) {
-		server_back_unsended(self, q);
+	if (self->conns[n].fd == -1) {
+		server_back_unsended(self, q, n);
 		return -1;
 	}
 	return len;
@@ -1412,12 +1453,15 @@ static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, 
 static void servers_check_timeouts(servers *ss, struct timeval now) {
 	servers *s;
 	for (s = ss; s != NULL; s = s->next) {
-		if (s->server->fd > -1) {
-			ssize_t duration = timediff(now, s->server->last);
-			if (duration >= DISCONNECT_WAIT_TIME) {
-				logout("timeout server %s:%u\n",
-						ss->server->ip, ss->server->port);
-				server_disconnect(s->server);
+		size_t i;
+		for (i = 0; i < s->server->nconns; i++) {
+			if (s->server->conns[i].fd > -1) {
+				ssize_t duration = timediff(now, s->server->conns[i].last);
+				if (duration >= DISCONNECT_WAIT_TIME) {
+					logout("timeout server %s:%u (%u)\n",
+							ss->server->ip, ss->server->port, i);
+					server_disconnect(s->server, i);
+				}
 			}
 		}
 	}
@@ -1431,7 +1475,7 @@ cluster_queuereader(void *d)
 	ssize_t stimeout = shutdown_timeout * 1000000; /*shutdown timeout in microseconds */
 	char keep_running;
 	size_t n;
-	struct pollfd ufds[256];
+	struct pollfd ufds[SERVER_MAX_CONNECTIONS * 50];
 	int ret = 0, iotimeout = 600; /* connection timeout */
 	struct timeval start, now;
 
@@ -1459,7 +1503,7 @@ cluster_queuereader(void *d)
 				/* check for emthy queue */
 				size_t qlen = 0;
 				for (s = ss; s != NULL; s = s->next) {
-					qlen += queue_len(s->server->queue) + s->server->len;
+					qlen += queue_len(s->server->queue) + __sync_fetch_and_add(&(s->server->alive), 0);
 				}
 				if (qlen == 0) {
 					break;
@@ -1472,10 +1516,13 @@ cluster_queuereader(void *d)
 
 		n = 0;
 		for (s = ss; s != NULL; s = s->next) {
-			if (s->server->fd != -1) {
-				ufds[n].fd = s->server->fd;
-				ufds[n].events = POLLOUT;
-				n++;
+			unsigned short k;
+			for (k = 0; k < s->server->nconns; k++) {
+				if (s->server->conns[k].fd != -1) {
+					ufds[n].fd = s->server->conns[k].fd;
+					ufds[n].events = POLLOUT;
+					n++;
+				}
 			}
 		}
 		if (n > 0)
@@ -1486,8 +1533,11 @@ cluster_queuereader(void *d)
 				"failed to write %s, cluster servers poll error: %s\n",
 				self->name, strerror(errno));
 			for (s = ss; s != NULL; s = s->next) {
-				if (s->server->fd > -1) {
-					server_disconnect(s->server);
+				unsigned short k;
+				for (k = 0; k < s->server->nconns; k++) {
+					if (s->server->conns[k].fd > -1) {
+						server_disconnect(s->server, k);
+					}
 				}
 			}
 		} else if (ret >= 0) {
@@ -1513,22 +1563,25 @@ cluster_queuereader(void *d)
 								ss->server->ip, ss->server->port, queue_len(self->queue));
 				}		
 				for (s = ss; s != NULL; s = s->next) {
-					struct pollfd *p = pollfd_find(ufds, n, &i, s->server->fd);
-					ssize_t len = server_queueread(s->server, self->queue, p, keep_running);
-					if (len == 0) {
-						break;
-					} else if (len > 0) {
-						if (s != ss) {
-							__sync_add_and_fetch(&(ss->server->requeue), (size_t) len);
+					unsigned short k;
+					for (k = 0; k < s->server->nconns; k++) {
+						struct pollfd *p = pollfd_find(ufds, n, &i, s->server->conns[k].fd);
+						ssize_t len = server_queueread(s->server, self->queue, p, keep_running, k);
+						if (len == 0) {
+							break;
+						} else if (len > 0) {
+							if (s != ss) {
+								__sync_add_and_fetch(&(ss->server->requeue), (size_t) len);
+							}
+							if (!overload) /* check for overload */
+								break;
+						} if (s->server->conns[k].fd == -1) {
+							server_connect(s->server, k);
+						} else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+							char failure = __sync_fetch_and_add(&(s->server->conns[k].failure), 1);
+							if (failure < FAIL_WAIT_COUNT && !overload)
+								break;
 						}
-						if (!overload) /* check for overload */
-							break;
-					} if (s->server->fd == -1) {
-						server_connect(s->server);
-					} else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-						char failure = __sync_fetch_and_add(&(s->server->failure), 1);
-						if (failure < FAIL_WAIT_COUNT && !overload)
-							break;
 					}
 				}
 			} else {
@@ -1538,7 +1591,6 @@ cluster_queuereader(void *d)
 				if (self->type == ANYOF || self->isdynamic) {
 					int overload;
 					size_t qfree_min = 0;
-									
 					for (s = ss; s != NULL; s = s->next) {
 						size_t qfree = queue_free(s->server->queue);
 						if (q == NULL || qfree < qfree_min) {
@@ -1567,18 +1619,21 @@ cluster_queuereader(void *d)
 				}
 
 				for (s = ss; s != NULL; s = s->next) {
-					struct pollfd *p = pollfd_find(ufds, n, &i, s->server->fd);
-					ssize_t len;
-					if (q) {
-						len = server_queueread(s->server, q, p, keep_running);
-						if (len > 0 && s->server != s_min)
-							__sync_add_and_fetch(&(s_min->requeue), (size_t) len);
-					} else {
-						len = server_queueread(s->server, s->server->queue, p, keep_running);
-					}
-					if (len < 0) {
-						if (s->server->fd == -1) {
-							server_connect(s->server);
+					unsigned short k;
+					for (k = 0; k < s->server->nconns; k++) {
+						struct pollfd *p = pollfd_find(ufds, n, &i, s->server->conns[k].fd);
+						ssize_t len;
+						if (q) {
+							len = server_queueread(s->server, q, p, keep_running, k);
+							if (len > 0 && s->server != s_min)
+								__sync_add_and_fetch(&(s_min->requeue), (size_t) len);
+						} else {
+							len = server_queueread(s->server, s->server->queue, p, keep_running, k);
+						}
+						if (len < 0) {
+							if (s->server->conns[k].fd == -1) {
+								server_connect(s->server, k);
+							}
 						}
 					}
 				}
@@ -1588,6 +1643,8 @@ cluster_queuereader(void *d)
 		gettimeofday(&now, NULL);
 		servers_check_timeouts(ss, now);
 	}
+
+	cluster_disconnect(self);
 
 	__sync_bool_compare_and_swap(&(self->running), 1, 0);
 	return NULL;
@@ -1600,7 +1657,7 @@ cluster_queuereader(void *d)
  * A connection with the server is maintained for as long as there is
  * data to be written.  As soon as there is none, the connection is
  * dropped if a timeout of DISCONNECT_WAIT_TIME exceeds.
- * ONLY for used without cluster (internal submission)
+ * ONLY for used without cluster (internal submission) witn 1 connection
  */
 static void *
 server_queuereader(void *d)
@@ -1614,7 +1671,6 @@ server_queuereader(void *d)
 	ssize_t stimeout = shutdown_timeout * 1000000; /*shutdown timeout in microseconds */
 
 	self->running = 1;
-	self->alive = 1;
 
 	while (1) {
 		keep_running = __sync_add_and_fetch(&(self->keep_running), 0);
@@ -1629,33 +1685,29 @@ server_queuereader(void *d)
 				if (timediff(start, stop) >= stimeout) {
 					break;
 				}
-				if (queue_len(self->queue) + self->len == 0)
+				if (queue_len(self->queue) + __sync_add_and_fetch(&(self->alive), 0) == 0)
 					break;
 			}
 		} else if (keep_running != SERVER_KEEP_RUNNING) {
 			break;
 		}
 
-		if (self->fd == -1) {
-			server_connect(self);
+		if (self->conns[0].fd == -1) {
+			server_connect(self, 0);
 		} else {
-			len = server_queueread(self, self->queue, NULL, keep_running);
+			len = server_queueread(self, self->queue, NULL, keep_running, 0);
 		}
 	}
 
-	__sync_bool_compare_and_swap(&(self->alive), 1, 0);
 	logout("shut down %s:%d\n", self->ip, self->port);
-	if (self->fd >= 0) {
-		self->strm->strmflush(self->strm);
-		server_disconnect(self);
+	if (self->conns[0].fd >= 0) {
+		self->conns[0].strm->strmflush(self->conns[0].strm);
+		server_disconnect(self, 0);
 	}
 
 	__sync_bool_compare_and_swap(&(self->running), 1, 0);
 	return NULL;
 }
-
-void server_cleanup(server *s);
-
 
 /**
  * Allocate a new (outbound) server.  Effectively this means a thread
@@ -1669,6 +1721,7 @@ server_new(
 		con_type type,
 		con_trnsp transport,
 		con_proto ctype,
+		unsigned short nconns,
 		struct addrinfo *saddr,
 		struct addrinfo *hint,
 		size_t qsize,
@@ -1678,6 +1731,7 @@ server_new(
 		unsigned short iotimeout,
 		unsigned int sockbufsize)
 {
+	unsigned short i;
 	server *ret;
 
 	if (q == NULL && qsize == 0) {
@@ -1695,16 +1749,20 @@ server_new(
 	ret->secpos = NULL;
 	ret->secondaries = NULL;
 	ret->secondariescnt = 0;
-	ret->len = 0;
+	if (nconns > 1 && (ctype == CON_TCP || ctype == CON_UDP)) {
+		if (nconns > SERVER_MAX_CONNECTIONS)
+			ret->nconns = SERVER_MAX_CONNECTIONS;
+		else
+			ret->nconns = nconns;
+	} else {
+		ret->nconns = 1; /* for other type force 1 connection */
+	}
 	ret->ip = strdup(ip);
 	if (ret->ip == NULL) {
 		free(ret);
 		return NULL;
 	}
 	ret->queue = NULL;
-	ret->saddr = NULL;
-	ret->hint = NULL;
-	ret->strm = NULL;
 	ret->secpos = NULL;
 	ret->port = port;
 	ret->instance = NULL;
@@ -1713,11 +1771,6 @@ server_new(
 	ret->iotimeout = iotimeout < 250 ? 600 : iotimeout;
 	ret->sockbufsize = sockbufsize;
 	ret->maxstalls = maxstalls;
-	if ((ret->batch = malloc(sizeof(char *) * (bsize + 1))) == NULL) {
-		server_cleanup(ret);
-		return NULL;
-	}
-	ret->fd = -1;
 
 	if (q == NULL) {
 		ret->shared_queue = 0;
@@ -1731,80 +1784,93 @@ server_new(
 		ret->queue = q;
 	}
 
-	/* setup normal or SSL-wrapped socket first */
-#ifdef HAVE_SSL
-	if ((transport & ~0xFFFF) == W_SSL) {
-		/* create an auto-negotiate context */
-		if (sslnew(ret, METRIC_BUFSIZ) == -1) {
+	for (i = 0; i < SERVER_MAX_CONNECTIONS; i++) {
+		ret->conns[i].fd = -1;
+		ret->conns[i].strm = NULL;
+		ret->conns[i].len = 0;
+		ret->conns[i].batch = NULL;
+		ret->conns[i].last.tv_sec = 0;
+		ret->conns[i].last.tv_usec = 0;
+		ret->conns[i].last_wait.tv_sec = 0;
+		ret->conns[i].last_wait.tv_usec = 0;
+		ret->conns[i].failure = 0;
+		ret->conns[i].metrics = 0;	
+		ret->conns[i].ticks = 0;
+		ret->conns[i].waits = 0;
+		ret->conns[i].prevmetrics = 0;
+		ret->conns[i].prevticks = 0;
+		ret->conns[i].prevwaits = 0;
+	}
+	for (i = 0; i < SERVER_MAX_CONNECTIONS; i++) {
+		if ((ret->conns[i].batch = malloc(sizeof(char *) * (bsize + 1))) == NULL) {
 			server_cleanup(ret);
 			return NULL;
 		}
-	} else
-#endif
-	{
-		if (socketnew(ret, METRIC_BUFSIZ) == -1) {
-			server_cleanup(ret);
-			return NULL;
-		}
-	}
-	
-	/* now see if we have a compressor defined */
-	if ((transport & 0xFFFF) == W_PLAIN) {
-		/* catch noop */
-	}
-#ifdef HAVE_GZIP
-	else if ((transport & 0xFFFF) == W_GZIP) {
-		if (gzipnew(ret, METRIC_BUFSIZ) == -1) {
-			server_cleanup(ret);
-			return NULL;
-		}
-	}
-#endif
-#ifdef HAVE_LZ4
-	else if ((transport & 0xFFFF) == W_LZ4) {
-		if (lznew(ret, METRIC_BUFSIZ) == -1) {
-			server_cleanup(ret);
-			return NULL;
-		}
-	}
-#endif
-#ifdef HAVE_SNAPPY
-	else if ((transport & 0xFFFF) == W_SNAPPY) {
-		if (snappynew(ret, METRIC_BUFSIZ) == -1) {
-			server_cleanup(ret);
-			return NULL;
-		}
-	}
-#endif
 
-	ret->saddr = saddr;
-	ret->reresolve = 0;
+		/* setup normal or SSL-wrapped socket first */
+	#ifdef HAVE_SSL
+		if ((transport & ~0xFFFF) == W_SSL) {
+			/* create an auto-negotiate context */
+			if (sslnew(ret, METRIC_BUFSIZ, i) == -1) {
+				server_cleanup(ret);
+				return NULL;
+			}
+		} else
+	#endif
+		{
+			if (socketnew(ret, METRIC_BUFSIZ, i) == -1) {
+				server_cleanup(ret);
+				return NULL;
+			}
+		}
+		
+		/* now see if we have a compressor defined */
+		if ((transport & 0xFFFF) == W_PLAIN) {
+			/* catch noop */
+		}
+	#ifdef HAVE_GZIP
+		else if ((transport & 0xFFFF) == W_GZIP) {
+			if (gzipnew(ret, METRIC_BUFSIZ, i) == -1) {
+				server_cleanup(ret);
+				return NULL;
+			}
+		}
+	#endif
+	#ifdef HAVE_LZ4
+		else if ((transport & 0xFFFF) == W_LZ4) {
+			if (lznew(ret, METRIC_BUFSIZ, i) == -1) {
+				server_cleanup(ret);
+				return NULL;
+			}
+		}
+	#endif
+	#ifdef HAVE_SNAPPY
+		else if ((transport & 0xFFFF) == W_SNAPPY) {
+			if (snappynew(ret, METRIC_BUFSIZ, i) == -1) {
+				server_cleanup(ret);
+				return NULL;
+			}
+		}
+	#endif
+	}
+	ret->saddr = saddr;		
+	ret->hint = hint;	
 	if (hint != NULL) {
 		ret->reresolve = 1;
-		ret->hint = hint;
+	} else {
+		ret->reresolve = 0;
 	}
-
-	ret->last.tv_sec = 0;
-	ret->last.tv_usec = 0;
-	ret->last_wait.tv_sec = 0;
-	ret->last_wait.tv_usec = 0;
 	ret->failover = 0;
-	ret->failure = 0;
 	ret->running = 0;
+	ret->alive = 0;
 	ret->keep_running = SERVER_KEEP_RUNNING;
 	ret->stallseq = 0;
-	ret->metrics = 0;
 	ret->dropped = 0;
 	ret->requeue = 0;
 	ret->stalls = 0;
-	ret->ticks = 0;
-	ret->waits = 0;
-	ret->prevmetrics = 0;
 	ret->prevdropped = 0;
 	ret->prevrequeue = 0;
 	ret->prevstalls = 0;
-	ret->prevticks = 0;
-	ret->prevwaits = 0;
 	ret->tid = 0;
 
 	return ret;
@@ -1966,14 +2032,14 @@ server_send(server *s, const char *d, char force)
 	if (!s->shared_queue) {
 		/* check for overloaded destination */
 		if (!force && s->secondariescnt > 0 &&
-			(__sync_add_and_fetch(&(s->failure), 0) || QUEUE_FREE_CRITICAL(qfree, s))) {
+			(QUEUE_FREE_CRITICAL(qfree, s) || server_failed(s))) {
 			size_t i;
 			size_t maxqfree = qfree + 4 * s->bsize;
 			queue *squeue = s->queue;
 
 			for (i = 0; i < s->secondariescnt; i++) {
-				if (s != s->secondaries[i] && !__sync_add_and_fetch(&(s->secondaries[i]->failure), 0) &&
-						__sync_bool_compare_and_swap(&(s->secondaries[i]->keep_running), 1, 1)) {
+				if (s != s->secondaries[i] && !server_failed(s->secondaries[i]) &&
+						__sync_fetch_and_add(&(s->secondaries[i]->keep_running), 0) == SERVER_KEEP_RUNNING) {
 					size_t sqfree = queue_free(s->secondaries[i]->queue);
 					if (sqfree >  maxqfree) {
 						squeue = s->secondaries[i]->queue;
@@ -1982,21 +2048,20 @@ server_send(server *s, const char *d, char force)
 				}
 			}
 			if (squeue != s->queue) {
-				if (__sync_add_and_fetch(&(s->failure), 0) == 0)
-					__sync_add_and_fetch(&(s->requeue), 1);
+				__sync_add_and_fetch(&(s->requeue), 1);
 				queue_enqueue(squeue, d);
 				return 1;
 			}
 		}
 	}
 	if (qfree == 0) {
-		char failure = __sync_add_and_fetch(&(s->failure), 0);
+		char failure = server_failed(s);
 		if (!s->shared_queue && !force && s->secondariescnt > 0) {
 			size_t i;
 			/* don't immediately drop if we know there are others that
 			 * back us up */
 			for (i = 0; i < s->secondariescnt; i++) {
-				if (!__sync_add_and_fetch(&(s->secondaries[i]->failure), 0)) {
+				if (!server_failed(s->secondaries[i])) {
 					failure = 0;
 					break;
 				}
@@ -2089,15 +2154,18 @@ void server_shutdown_wait(server *s)
  */
 void
 server_cleanup(server *s) {
+	size_t i;
 	if (s->queue != NULL && s->shared_queue == 0) {
 		queue_destroy(s->queue);
 	}
-	free(s->batch);
 	free(s->instance);
 	freeaddrinfo(s->saddr);
 	freeaddrinfo(s->hint);
-	if (s->strm != NULL) {
-		s->strm->strmfree(s->strm);
+	for (i = 0; i < s->nconns; i++) {
+		free(s->conns[i].batch);
+		if (s->conns[i].strm != NULL) {
+			s->conns[i].strm->strmfree(s->conns[i].strm);
+		}
 	}
 	free((char *)s->ip);
 	s->ip = NULL;
@@ -2137,7 +2205,8 @@ server_swap_queue(server *l, server *r)
 {
 	queue *t;
 	char shared;
-
+	unsigned short nconns, i;
+	
 	assert(l->tid == 0);
 	assert(r->tid == 0);
 
@@ -2149,18 +2218,25 @@ server_swap_queue(server *l, server *r)
 	r->shared_queue = shared;
 	
 	/* swap associated statistics as well */
-	l->metrics = r->metrics;
 	l->dropped = r->dropped;
 	l->stalls = r->stalls;
-	l->ticks = r->ticks;
-	l->waits = r->waits;
 	l->requeue = r->requeue;
-	l->prevmetrics = r->prevmetrics;
 	l->prevdropped = r->prevdropped;
 	l->prevstalls = r->prevstalls;
-	l->prevticks = r->prevticks;
-	l->prevwaits = r->prevwaits;
 	l->prevrequeue = r->prevrequeue;
+
+	if (r->nconns > l->nconns)
+		nconns = l->nconns;
+	else
+		nconns = r->nconns;
+	for (i = 0; i < nconns; i++) {
+		l->conns[i].metrics = r->conns[i].metrics;
+		l->conns[i].ticks = r->conns[i].ticks;
+		l->conns[i].waits = r->conns[i].waits;
+		l->conns[i].prevmetrics = r->conns[i].prevmetrics;
+		l->conns[i].prevticks = r->conns[i].prevticks;
+		l->conns[i].prevwaits = r->conns[i].prevwaits;
+	}
 }
 
 /**
@@ -2233,20 +2309,29 @@ server_type(server *s)
 inline char
 server_failed(server *s)
 {
+	size_t i;
+	char fail_min = 0;
 	if (s == NULL)
 		return 0;
-	return __sync_add_and_fetch(&(s->failure), 0);
+	
+	for (i = 0; i < s->nconns; i++) {
+		char failure = __sync_add_and_fetch(&(s->conns[i].failure), 0);
+		if (failure > fail_min) {
+			fail_min = failure;
+		}
+	}
+	return fail_min;
 }
 
 /**
  * Returns the wall-clock time in microseconds (us) consumed sending metrics.
  */
 inline size_t
-server_get_ticks(server *s)
+server_get_ticks(server *s, unsigned short n)
 {
 	if (s == NULL)
 		return 0;
-	return __sync_add_and_fetch(&(s->ticks), 0);
+	return __sync_add_and_fetch(&(s->conns[n].ticks), 0);
 }
 
 /**
@@ -2254,13 +2339,13 @@ server_get_ticks(server *s)
  * call to this function.
  */
 inline size_t
-server_get_ticks_sub(server *s)
+server_get_ticks_sub(server *s, unsigned short n)
 {
 	size_t d;
 	if (s == NULL)
 		return 0;
-	d = __sync_add_and_fetch(&(s->ticks), 0) - s->prevticks;
-	s->prevticks += d;
+	d = __sync_add_and_fetch(&(s->conns[n].ticks), 0) - s->conns[n].prevticks;
+	s->conns[n].prevticks += d;
 	return d;
 }
 
@@ -2268,11 +2353,11 @@ server_get_ticks_sub(server *s)
  * Returns the wall-clock time in microseconds (us) consumed last send.
  */
 inline size_t
-server_get_waits(server *s)
+server_get_waits(server *s, unsigned short n)
 {
 	if (s == NULL)
 		return 0;
-	return __sync_add_and_fetch(&(s->waits), 0);
+	return __sync_add_and_fetch(&(s->conns[n].waits), 0);
 }
 
 /**
@@ -2280,13 +2365,13 @@ server_get_waits(server *s)
  * call to this function.
  */
 inline size_t
-server_get_waits_sub(server *s)
+server_get_waits_sub(server *s, unsigned short n)
 {
 	size_t d;
 	if (s == NULL)
 		return 0;
-	d = __sync_add_and_fetch(&(s->waits), 0) - s->prevwaits;
-	s->prevwaits += d;
+	d = __sync_add_and_fetch(&(s->conns[n].waits), 0) - s->conns[n].prevwaits;
+	s->conns[n].prevwaits += d;
 	return d;
 }
 
@@ -2294,24 +2379,24 @@ server_get_waits_sub(server *s)
  * Returns the number of metrics sent since start.
  */
 inline size_t
-server_get_metrics(server *s)
+server_get_metrics(server *s, unsigned short n)
 {
 	if (s == NULL)
 		return 0;
-	return __sync_add_and_fetch(&(s->metrics), 0);
+	return __sync_add_and_fetch(&(s->conns[n].metrics), 0);
 }
 
 /**
  * Returns the number of metrics sent since last call to this function.
  */
 inline size_t
-server_get_metrics_sub(server *s)
+server_get_metrics_sub(server *s, unsigned short n)
 {
 	size_t d;
 	if (s == NULL)
 		return 0;
-	d = __sync_add_and_fetch(&(s->metrics), 0) - s->prevmetrics;
-	s->prevmetrics += d;
+	d = __sync_add_and_fetch(&(s->conns[n].metrics), 0) - s->conns[n].prevmetrics;
+	s->conns[n].prevmetrics += d;
 	return d;
 }
 

@@ -62,13 +62,14 @@ struct _rcptr_trsp {
 
 %token crCLUSTER
 %token crFORWARD crANY_OF crFAILOVER crCARBON_CH crFNV1A_CH crJUMP_FNV1A_CH
-	crFILE crIP crREPLICATION crDYNAMIC crPROTO crUSEALL crUDP crTCP
+	crFILE crIP crREPLICATION crDYNAMIC crPROTO crUSEALL crUDP crTCP crCONNECTIONS
 %type <enum clusttype> cluster_useall cluster_ch
 %type <struct _clust> cluster_type cluster_file
 %type <int> cluster_opt_repl cluster_opt_useall cluster_opt_dynamic
 %type <con_proto> cluster_opt_proto
 %type <con_type> cluster_opt_type
 %type <char *> cluster_opt_instance
+%type <int> server_connections
 %type <cluster *> cluster
 %type <struct _clhost *> cluster_host cluster_hosts cluster_opt_host
 	cluster_path cluster_paths cluster_opt_path
@@ -143,7 +144,7 @@ command: cluster
 	   ;
 
 /*** {{{ BEGIN cluster ***/
-cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
+cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] server_connections[connections]
 	   {
 	   	struct _clhost *w;
 		char *err;
@@ -193,6 +194,8 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 				logerr("unknown cluster type %zd!\n", (ssize_t)$$->type);
 				YYABORT;
 		}
+
+		$$->server_connections = $connections;
 		
 		for (w = $servers; w != NULL; w = w->next) {
 			err = router_add_server(rtr, w->ip, w->port, w->inst,
@@ -210,7 +213,7 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 			YYERROR;
 		}
 	   }
-	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths]
+	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths] server_connections[connections]
 	   {
 	   	struct _clhost *w;
 		char *err;
@@ -228,6 +231,8 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 				logerr("unknown cluster type %zd!\n", (ssize_t)$$->type);
 				YYABORT;
 		}
+
+		$$->server_connections = $connections;
 		
 		for (w = $paths; w != NULL; w = w->next) {
 			err = router_add_server(rtr, w->ip, w->port, w->inst,
@@ -275,6 +280,10 @@ cluster_opt_repl:                             { $$ = 1; }
 cluster_opt_dynamic:           { $$ = 0; }
 				   | crDYNAMIC { $$ = 1; }
 				   ;
+
+server_connections:               { $$ = 1; }
+				 | crCONNECTIONS crINTVAL[cnt] { $$ = $cnt; }
+				 ;
 
 cluster_file: crFILE crIP { $$.t = FILELOGIP; $$.ival = 0; }
 			| crFILE      { $$.t = FILELOG; $$.ival = 0; }

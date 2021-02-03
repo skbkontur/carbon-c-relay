@@ -23,6 +23,8 @@
 #include "queue.h"
 #include "relay.h"
 
+#define SERVER_MAX_CONNECTIONS 32
+
 #define SERVER_STALL_BITS  4  /* 0 up to 15 */
 
 #define SERVER_MAX_SEND    10 /* max try write to socket for complete */
@@ -43,6 +45,7 @@ server *server_new(
 		con_type type,
 		con_trnsp transport,
 		con_proto ctype,
+		unsigned short nconns,
 		struct addrinfo *saddr,
 		struct addrinfo *hint,
 		size_t queuesize,
@@ -64,19 +67,20 @@ void server_swap_queue(server *l, server *r);
 const char *server_ip(server *s);
 unsigned short server_port(server *s);
 char *server_instance(server *s);
+unsigned short server_get_connections(server *s);
 con_proto server_ctype(server *s);
 con_type server_type(server *s);
 con_trnsp server_transport(server *s);
 char server_failed(server *s);
-size_t server_get_ticks(server *s);
-size_t server_get_waits(server *s);
-size_t server_get_metrics(server *s);
+size_t server_get_ticks(server *s, unsigned short n);
+size_t server_get_waits(server *s, unsigned short n);
+size_t server_get_metrics(server *s, unsigned short n);
 size_t server_get_stalls(server *s);
 size_t server_get_dropped(server *s);
 size_t server_get_requeue(server *s);
-size_t server_get_ticks_sub(server *s);
-size_t server_get_waits_sub(server *s);
-size_t server_get_metrics_sub(server *s);
+size_t server_get_ticks_sub(server *s, unsigned short n);
+size_t server_get_waits_sub(server *s, unsigned short n);
+size_t server_get_metrics_sub(server *s, unsigned short n);
 size_t server_get_stalls_sub(server *s);
 size_t server_get_dropped_sub(server *s);
 size_t server_get_requeue_sub(server *s);

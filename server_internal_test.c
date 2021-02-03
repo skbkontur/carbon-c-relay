@@ -67,13 +67,6 @@ static int maxstalls = 4;
 static unsigned short iotimeout = 600;
 static int sockbufsize = 0;
 
-char server_connect(server *s);
-int server_poll(server *s);
-int server_disconnect(server *s);
-void server_cleanup(server *s);
-
-z_strm *server_get_strm(server *s);
-
 static char *metricll(long long n) {
     char *s = malloc(256);
     if (s != NULL) {
@@ -87,7 +80,7 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
     z_strm *strm;
     const char *err;
     int state = DSTATUS_UP;
-    int ret = server_connect(s);
+    int ret = server_connect(s, 0);
     // connection must failed, mock is down state
     ASSERT_EQUAL_D(-1, ret, "connection must failed");
 
@@ -96,11 +89,11 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
 
     for (i = 0; i < 30; i++) {
         usleep(10); /* sleep for wake up event loop thread */
-        if ((ret = server_connect(s)) != -1) {
+        if ((ret = server_connect(s, 0)) != -1) {
             break;
         }
     }
-    strm = server_get_strm(s);
+    strm = server_get_strm(s, 0);
 
     // connection must successed
     if (ret == -1) {
@@ -125,7 +118,7 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         state = DSTATUS_UP;
                         ASSERT_EQUAL(0, listener_mock_set_state(d, state));
-                        ASSERT_EQUAL_D(1, server_poll(s), "poll");
+                        ASSERT_EQUAL_D(1, server_poll(s, 0), "poll");
                     } else {
                         ASSERT_FORMAT("%s\n", strerror(errno));
                     }
@@ -175,7 +168,7 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
         }
     }
 
-    server_disconnect(s);
+    server_disconnect(s, 0);
     listener_mock_stop(d);
     ASSERT_NULL_D(queue_dequeue(d->q), "queue not empthy");
     ASSERT_EQUAL_D(queuesize, i, "dequeue loop ended too early");
@@ -207,7 +200,7 @@ CTEST_SETUP(server_plain_tcp) {
 
 CTEST_TEARDOWN(server_plain_tcp) {
     if (data->s != NULL) {
-        server_disconnect(data->s);
+        server_disconnect(data->s, 0);
         server_cleanup(data->s);
     }
     listener_mock_stop(&data->d);
@@ -221,7 +214,7 @@ CTEST2(server_plain_tcp, connect_and_send) {
     }
 
     data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
-                         data->proto, data->saddr, data->hint, queuesize, NULL,
+                         data->proto, 1, data->saddr, data->hint, queuesize, NULL,
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
@@ -254,7 +247,7 @@ CTEST_SETUP(server_gzip_tcp) {
 
 CTEST_TEARDOWN(server_gzip_tcp) {
     if (data->s != NULL) {
-        server_disconnect(data->s);
+        server_disconnect(data->s, 0);
         server_cleanup(data->s);
     }
     listener_mock_stop(&data->d);
@@ -268,7 +261,7 @@ CTEST2(server_gzip_tcp, connect_and_send) {
     }
 
     data->s = server_new(data->ip, data->port, T_LINEMODE, data->transport,
-                         data->proto, data->saddr, data->hint, queuesize, NULL,
+                         data->proto, 1, data->saddr, data->hint, queuesize, NULL,
                          batchsize, maxstalls, iotimeout, sockbufsize);
     ASSERT_NOT_NULL(data->s);
 
