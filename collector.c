@@ -174,6 +174,14 @@ collector_runner(void *s)
 		totblackholes = 0;
 		totdiscards = 0;
 		totsleeps = 0;
+
+		ticks = 0;
+		waits = 0;
+		metrics = 0;
+		blackholes = 0;
+		discards = 0;
+		sleeps = 0;
+
 		for (i = 0; dispatchers[i] != NULL; i++) {
 			totsleeps += sleeps = d_sleeps(dispatchers[i]);
 			totticks += ticks = d_ticks(dispatchers[i]);
@@ -301,9 +309,9 @@ collector_runner(void *s)
 					send_server_conn_metrics(destbuf, n, nticks, nwaits, nmetrics);
 				}
 			} else {
-				ticks = s_ticks(srvs[i], n);
-				waits = s_waits(srvs[i], n);
-				metrics = s_metrics(srvs[i], n);
+				ticks = s_ticks(srvs[i], 0);
+				waits = s_waits(srvs[i], 0);
+				metrics = s_metrics(srvs[i], 0);
 			}
 			totticks += ticks;
 			totwaits += waits;
