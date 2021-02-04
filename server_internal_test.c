@@ -388,5 +388,6 @@ int main(int argc, const char *argv[]) {
     /* for prevent sanitizers leak detect */
     libevent_global_shutdown();
 #endif
+    free(pemcert);    
     return ret;
 }
