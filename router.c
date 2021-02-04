@@ -1016,6 +1016,7 @@ cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t que
 		cl->name = ra_strdup(a, name);
 	}
 	cl->type = ctype;
+	cl->isdynamic = 0;
 	cl->members.routes = m;
 	cl->running = 0;
 	cl->keep_running = SERVER_KEEP_RUNNING;
