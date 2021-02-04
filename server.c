@@ -1834,7 +1834,8 @@ server_new(
 		ret->conns[i].prevticks = 0;
 		ret->conns[i].prevwaits = 0;
 	}
-	for (i = 0; i < SERVER_MAX_CONNECTIONS; i++) {
+
+	for (i = 0; i < ret->nconns; i++) {
 		if ((ret->conns[i].batch = malloc(sizeof(char *) * (bsize + 1))) == NULL) {
 			server_cleanup(ret);
 			return NULL;
