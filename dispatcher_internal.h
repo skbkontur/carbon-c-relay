@@ -41,6 +41,11 @@
 
 #include "dispatcher.h"
 
+enum conntype {
+	LISTENER,
+	CONNECTION
+};
+
 typedef struct _z_strm {
 	ssize_t (*strmread)(struct _z_strm *, void *, size_t);  /* read func */
 
@@ -83,7 +88,7 @@ typedef struct _z_strm {
 } z_strm;
 
 z_strm *
-connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
+connection_strm_new(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
 			#ifdef HAVE_SSL
 			, SSL_CTX *ctx
 			#else
@@ -91,5 +96,15 @@ connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
 			#endif
 			, char **obuf, size_t *osize
 );
+
+connection *connection_new();
+dispatcher *dispatch_new(unsigned char id, enum conntype type);
+void dispatch_init(dispatcher *d, router *r, char *allowed_chars, int maxinplen, int maxmetriclen);
+void dispatch_closeconnection(dispatcher *d, connection *conn, ssize_t len);
+void dispatch_received_metrics(connection *conn, dispatcher *self);
+
+void connection_buf_cat(connection *con, char *data);
+const char *connection_buf(connection *con);
+const char *connection_metric(connection *con);
 
 #endif

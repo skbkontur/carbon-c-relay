@@ -40,12 +40,6 @@
 #include "dispatcher_internal.h"
 #include "eventpipe.h"
 
-enum conntype {
-	LISTENER,
-	CONNECTION
-};
-
-
 #define SOCKGROWSZ  32768
 #define CONNGROWSZ  1024
 #define MAX_LISTENERS 32  /* hopefully enough */
@@ -169,7 +163,13 @@ socknew(size_t isize, size_t *osize)
 static inline ssize_t
 sockread(z_strm *strm, void *buf, size_t sze)
 {
-	return read(strm->hdl.sock, buf, sze);
+	ssize_t n = read(strm->hdl.sock, buf, sze);
+	((char *) buf)[n] = '\0';
+	if (n > 0 && strstr(buf, "_collector_stub") != NULL) {
+		logout("sockread %s\n", buf);
+	}
+	return n;
+	//return read(strm->hdl.sock, buf, sze);
 }
 
 static inline int
@@ -680,7 +680,7 @@ sslerror(z_strm *strm, int rval)
 #endif
 
 z_strm *
-connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
+connection_strm_new(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
 			#ifdef HAVE_SSL
 			, SSL_CTX *ctx
 			#else
@@ -781,7 +781,6 @@ connectionnew(int sock, char *srcaddr, con_proto ctype, con_trnsp transport
 	return strm;
 }
 
-static void dispatch_closeconnection(dispatcher *d, connection *conn, ssize_t len);
 static void dispatch_releaseconnection(int sock);
 static int dispatch_connection(connection *conn, dispatcher *self, struct timeval start);
 
@@ -1177,6 +1176,31 @@ __dispatch_transplantlistener(dispatcher *d, listener *olsnr, listener *nlsnr, r
 
 #define CONNGROWSZ  1024
 
+connection *connection_new() {
+	connection *con = malloc(sizeof(connection));
+	if (con) {
+		con->takenby = C_SETUP;
+	}
+	return con;
+}
+
+/* only for tests */
+void connection_buf_cat(connection *con, char *data) {
+	size_t len = strlen(data);
+	strcpy(con->buf + con->buflen, data);
+	con->buflen += len;
+}
+
+/* only for tests */
+const char *connection_buf(connection *con) {
+	return con->buf;
+}
+
+/* only for tests */
+const char *connection_metric(connection *con) {
+	return con->metric;
+}
+
 /**
  * Adds a connection socket to the chain of connections.
  * Connection sockets are those which need to be read from.
@@ -1200,8 +1224,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 	pthread_rwlock_rdlock(&connectionslock);
 	if (sock < connectionslen) {
 		if (connections[sock] == NULL) {
-			connections[sock] = malloc(sizeof(connection));
-			connections[sock]->takenby = C_SETUP;
+			connections[sock] = connection_new();
 		} else {
 			logerr("dispatcher %d: addconnection for existing socket %d\n", d->id, sock);
 			/* abort(); */
@@ -1234,7 +1257,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 		}
 		connections = newlst;
 		connectionslen = sock + CONNGROWSZ;
-		connections[sock] = malloc(sizeof(connection));
+		connections[sock] = connection_new();
 		if (connections[sock] == NULL) {
 			pthread_rwlock_unlock(&connectionslock);
 			__sync_add_and_fetch(&d->connections, -1);
@@ -1243,7 +1266,6 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 					connectionslen);
 			return NULL;
 		}
-		connections[sock]->takenby = C_SETUP;
 	}
 	conn = connections[sock];
 	pthread_rwlock_unlock(&connectionslock);
@@ -1286,7 +1308,7 @@ dispatch_addconnection(int sock, listener *lsnr, dispatcher *d, char is_aggr, ch
 		#endif
 	}
 
-	if ((conn->strm = connectionnew(sock, conn->srcaddr, ctype, transport, ctx, &conn->buf, &conn->bufsize)) == NULL) {
+	if ((conn->strm = connection_strm_new(sock, conn->srcaddr, ctype, transport, ctx, &conn->buf, &conn->bufsize)) == NULL) {
 		dispatch_releaseconnection(sock);
 		__sync_sub_and_fetch(&d->connections, 1);
 		return NULL;
@@ -1391,7 +1413,7 @@ dispatch_process_dests(connection *conn, dispatcher *self, struct timeval now)
 }
 
 /* Extract received metrics from buffer */
-static void
+void
 dispatch_received_metrics(connection *conn, dispatcher *self)
 {
 	/* Metrics look like this: metric_path value timestamp\n
@@ -1407,6 +1429,9 @@ dispatch_received_metrics(connection *conn, dispatcher *self)
 	char search_tags;
 
 	q = conn->metric;
+	if (strstr(conn->buf+1, "_collector_stub") != NULL && strstr(conn->buf, "_collector_stub") != conn->buf) {
+		logout("dispatch %s", conn->buf);
+	}
 	firstspace = NULL;
 	lastnl = NULL;
 	search_tags = self->tags_supported;
@@ -1507,12 +1532,12 @@ dispatch_received_metrics(connection *conn, dispatcher *self)
 		/* move remaining stuff to the front */
 		conn->buflen -= lastnl + 1 - conn->buf;
 		tracef("dispatcher %d, conn->buf: %p, lastnl: %p, diff: %zd, "
-				"conn->buflen: %d, sizeof(conn->buf): %lu, "
-				"memmove(%d, %lu, %d)\n",
+				"conn->buflen: %lu, sizeof(conn->buf): %lu, "
+				"memmove(%d, %lu, %zu)\n",
 				self->id,
 				conn->buf, lastnl, lastnl - conn->buf,
 				conn->buflen, conn->bufsize,
-				0, lastnl + 1 - conn->buf, conn->buflen + 1);
+				0, (size_t) (lastnl + 1 - conn->buf), conn->buflen + 1);
 		tracef("dispatcher %d, pre conn->buf: %s\n", self->id, conn->buf);
 		/* copy last NULL-byte for debug tracing */
 		memmove(conn->buf, lastnl + 1, conn->buflen + 1);
@@ -1531,7 +1556,7 @@ static inline void dispatch_releaseconnection(int sock)
 	close(sock);
 }
 
-static void
+void
 dispatch_closeconnection(dispatcher *d, connection *conn, ssize_t len)
 {
 	tracef("dispatcher: %d, connfd: %d, len: %zd [%s], disconnecting\n",
@@ -1604,6 +1629,10 @@ dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 #ifdef ENABLE_TRACE
 			conn->buf[conn->buflen] = '\0';
 #endif
+		}
+
+		if (strstr(conn->buf, "_collector_stub") != NULL) {
+			logout("read %s\n", conn->buf);
 		}
 
 		dispatch_received_metrics(conn, self);
@@ -1679,7 +1708,7 @@ dispatch_runner(void *arg)
  * Starts a new dispatcher for the given type and with the given id.
  * Returns its handle.
  */
-static dispatcher *
+dispatcher *
 dispatch_new(
 		unsigned char id,
 		enum conntype type
@@ -1768,6 +1797,27 @@ dispatch_workers_alloc(char count)
 	return workercnt;
 }
 
+void
+dispatch_init(
+		dispatcher *d,
+		router *r,
+		char *allowed_chars,
+		int maxinplen,
+		int maxmetriclen
+	)
+{
+	d->rtr = r;
+	d->allowed_chars = allowed_chars;
+	d->tags_supported = 0;
+	d->maxinplen = maxinplen;
+	d->maxmetriclen = maxmetriclen;
+
+	/* switch tag support on when the user didn't allow ';' as valid
+	 * character in metrics */
+	if (allowed_chars != NULL && strchr(allowed_chars, ';') == NULL)
+		d->tags_supported = 1;
+}
+
 static int
 dispatch_start(
 		unsigned char id,
@@ -1781,16 +1831,8 @@ dispatch_start(
 	if (d->type == CONNECTION && r == NULL) {
 		return -1;
 	}
-	d->rtr = r;
-	d->allowed_chars = allowed_chars;
-	d->tags_supported = 0;
-	d->maxinplen = maxinplen;
-	d->maxmetriclen = maxmetriclen;
-
-	/* switch tag support on when the user didn't allow ';' as valid
-	 * character in metrics */
-	if (allowed_chars != NULL && strchr(allowed_chars, ';') == NULL)
-		d->tags_supported = 1;
+	
+	dispatch_init(d, r, allowed_chars, maxinplen, maxmetriclen);
 
 	if (pthread_create(&d->tid, NULL, dispatch_runner, d) == 0) {
 		return 0;

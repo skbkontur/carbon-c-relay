@@ -195,7 +195,7 @@ static void listener_accept_cb(int fd, short flags, void *arg) {
         }
         if (d->conns[client].strm == NULL) {
             d->conns[client].strm =
-                connectionnew(client, srcaddr, d->ctype, d->transport, d->ctx, &d->conns[client].buf, &d->conns[client].bufsize);
+                connection_strm_new(client, srcaddr, d->ctype, d->transport, d->ctx, &d->conns[client].buf, &d->conns[client].bufsize);
             if (d->conns[client].strm == NULL) {
                 queue_enqueue(d->qerr, strdup("error allocation connection"));
                 close(client);

@@ -1359,8 +1359,10 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 			}
 			mlen = *(size_t *)metric;
 			m = metric + sizeof(size_t);
+			if (strstr(m+1, "_collector_stub") != NULL) {
+				logout("dequeue %s", m);
+			}
 			self->conns[n].batch[self->conns[n].len] = metric;
-			self->conns[n].len++;
 			slen = self->conns[n].strm->strmwrite(self->conns[n].strm, m, mlen);
 			if (slen == -1 && (errno == ENOBUFS || errno == EAGAIN || errno == EWOULDBLOCK)) {
 				/* flush and return last message back to the queue */
@@ -1369,8 +1371,6 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 						logerr("dropping metric: %s", *metric);
 					free((char *) metric);
 					__sync_add_and_fetch(&(self->dropped), 1);
-				} else {
-					self->conns[n].len--;
 				}
 				break;
 			} else if (slen != mlen) {
@@ -1387,7 +1387,7 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 				server_disconnect(self, n);
 				break;
 			}
-
+			self->conns[n].len++;
 		}
 
 		if (self->conns[n].len == 0) {
@@ -2062,7 +2062,12 @@ server_set_instance(server *self, char *instance)
 inline char
 server_send(server *s, const char *d, char force)
 {
+	const char *m = d + sizeof(size_t);
 	size_t qfree = queue_free(s->queue);
+	/* DEBUG */
+	if (strstr(m+1, "_collector_stub") != NULL && strstr(m, "_collector_stub") != m) {
+		logout("send %s", m);
+	}
 	if (!s->shared_queue) {
 		/* check for overloaded destination */
 		if (!force && s->secondariescnt > 0 &&

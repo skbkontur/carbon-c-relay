@@ -106,8 +106,8 @@ build_triplet = @build@
 host_triplet = @host@
 bin_PROGRAMS = relay$(EXEEXT)
 check_PROGRAMS = sendmetric$(EXEEXT)
-noinst_PROGRAMS = test_router$(EXEEXT) test_server_internal$(EXEEXT) \
-	test_server_any_of2$(EXEEXT)
+noinst_PROGRAMS = test_dispatcher$(EXEEXT) \
+	test_server_internal$(EXEEXT) test_server_any_of2$(EXEEXT)
 @SSL_ENABLED_TRUE@am__append_1 = dual-ssl large-ssl dual-large-ssl
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
@@ -180,9 +180,10 @@ am_sendmetric_OBJECTS = sendmetric.$(OBJEXT)
 sendmetric_OBJECTS = $(am_sendmetric_OBJECTS)
 sendmetric_DEPENDENCIES = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
-am_test_router_OBJECTS = router_test.$(OBJEXT) $(am__objects_1)
-test_router_OBJECTS = $(am_test_router_OBJECTS)
-test_router_DEPENDENCIES = $(am__DEPENDENCIES_2)
+am_test_dispatcher_OBJECTS = dispatcher_test.$(OBJEXT) \
+	$(am__objects_1)
+test_dispatcher_OBJECTS = $(am_test_dispatcher_OBJECTS)
+test_dispatcher_DEPENDENCIES = $(am__DEPENDENCIES_2)
 am_test_server_any_of2_OBJECTS = server_any_of2_test.$(OBJEXT) \
 	listener_mock.$(OBJEXT) $(am__objects_1)
 test_server_any_of2_OBJECTS = $(am_test_server_any_of2_OBJECTS)
@@ -210,11 +211,11 @@ am__depfiles_remade = ./$(DEPDIR)/aggregator.Po \
 	./$(DEPDIR)/allocator.Po ./$(DEPDIR)/collector.Po \
 	./$(DEPDIR)/conffile.tab.Po ./$(DEPDIR)/conffile.yy.Po \
 	./$(DEPDIR)/consistent-hash.Po ./$(DEPDIR)/dispatcher.Po \
-	./$(DEPDIR)/eventpipe.Po ./$(DEPDIR)/faketime.Plo \
-	./$(DEPDIR)/listener_mock.Po ./$(DEPDIR)/md5.Po \
-	./$(DEPDIR)/queue.Po ./$(DEPDIR)/receptor.Po \
-	./$(DEPDIR)/relay.Po ./$(DEPDIR)/router.Po \
-	./$(DEPDIR)/router_test.Po ./$(DEPDIR)/sendmetric.Po \
+	./$(DEPDIR)/dispatcher_test.Po ./$(DEPDIR)/eventpipe.Po \
+	./$(DEPDIR)/faketime.Plo ./$(DEPDIR)/listener_mock.Po \
+	./$(DEPDIR)/md5.Po ./$(DEPDIR)/queue.Po \
+	./$(DEPDIR)/receptor.Po ./$(DEPDIR)/relay.Po \
+	./$(DEPDIR)/router.Po ./$(DEPDIR)/sendmetric.Po \
 	./$(DEPDIR)/server.Po ./$(DEPDIR)/server_any_of2_test.Po \
 	./$(DEPDIR)/server_internal_test.Po
 am__mv = mv -f
@@ -237,7 +238,7 @@ am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
 DIST_SOURCES = $(libfaketime_la_SOURCES) $(relay_SOURCES) \
-	$(sendmetric_SOURCES) $(test_router_SOURCES) \
+	$(sendmetric_SOURCES) $(test_dispatcher_SOURCES) \
 	$(test_server_any_of2_SOURCES) $(test_server_internal_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
@@ -478,6 +479,8 @@ EXTRA_DIST = \
 
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
+test_dispatcher_SOURCES = dispatcher_test.c $(SOURCES)
+test_dispatcher_LDADD = $(RELAY_LIBS)
 test_server_internal_SOURCES = server_internal_test.c listener_mock.c $(SOURCES)
 test_server_internal_LDADD = $(RELAY_LIBS)
 test_server_any_of2_SOURCES = server_any_of2_test.c listener_mock.c $(SOURCES)
@@ -656,9 +659,9 @@ sendmetric$(EXEEXT): $(sendmetric_OBJECTS) $(sendmetric_DEPENDENCIES) $(EXTRA_se
 	@rm -f sendmetric$(EXEEXT)
 	$(AM_V_GEN)$(sendmetric_LINK) $(sendmetric_OBJECTS) $(sendmetric_LDADD) $(LIBS)
 
-test_router$(EXEEXT): $(test_router_OBJECTS) $(test_router_DEPENDENCIES) $(EXTRA_test_router_DEPENDENCIES) 
-	@rm -f test_router$(EXEEXT)
-	$(AM_V_CCLD)$(LINK) $(test_router_OBJECTS) $(test_router_LDADD) $(LIBS)
+test_dispatcher$(EXEEXT): $(test_dispatcher_OBJECTS) $(test_dispatcher_DEPENDENCIES) $(EXTRA_test_dispatcher_DEPENDENCIES) 
+	@rm -f test_dispatcher$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(test_dispatcher_OBJECTS) $(test_dispatcher_LDADD) $(LIBS)
 
 test_server_any_of2$(EXEEXT): $(test_server_any_of2_OBJECTS) $(test_server_any_of2_DEPENDENCIES) $(EXTRA_test_server_any_of2_DEPENDENCIES) 
 	@rm -f test_server_any_of2$(EXEEXT)
@@ -681,6 +684,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/conffile.yy.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/consistent-hash.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/dispatcher.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/dispatcher_test.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/eventpipe.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/faketime.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/listener_mock.Po@am__quote@ # am--include-marker
@@ -689,7 +693,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/receptor.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/relay.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/router.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/router_test.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sendmetric.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/server.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/server_any_of2_test.Po@am__quote@ # am--include-marker
@@ -1056,6 +1059,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/conffile.yy.Po
 	-rm -f ./$(DEPDIR)/consistent-hash.Po
 	-rm -f ./$(DEPDIR)/dispatcher.Po
+	-rm -f ./$(DEPDIR)/dispatcher_test.Po
 	-rm -f ./$(DEPDIR)/eventpipe.Po
 	-rm -f ./$(DEPDIR)/faketime.Plo
 	-rm -f ./$(DEPDIR)/listener_mock.Po
@@ -1064,7 +1068,6 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/receptor.Po
 	-rm -f ./$(DEPDIR)/relay.Po
 	-rm -f ./$(DEPDIR)/router.Po
-	-rm -f ./$(DEPDIR)/router_test.Po
 	-rm -f ./$(DEPDIR)/sendmetric.Po
 	-rm -f ./$(DEPDIR)/server.Po
 	-rm -f ./$(DEPDIR)/server_any_of2_test.Po
@@ -1124,6 +1127,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/conffile.yy.Po
 	-rm -f ./$(DEPDIR)/consistent-hash.Po
 	-rm -f ./$(DEPDIR)/dispatcher.Po
+	-rm -f ./$(DEPDIR)/dispatcher_test.Po
 	-rm -f ./$(DEPDIR)/eventpipe.Po
 	-rm -f ./$(DEPDIR)/faketime.Plo
 	-rm -f ./$(DEPDIR)/listener_mock.Po
@@ -1132,7 +1136,6 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/receptor.Po
 	-rm -f ./$(DEPDIR)/relay.Po
 	-rm -f ./$(DEPDIR)/router.Po
-	-rm -f ./$(DEPDIR)/router_test.Po
 	-rm -f ./$(DEPDIR)/sendmetric.Po
 	-rm -f ./$(DEPDIR)/server.Po
 	-rm -f ./$(DEPDIR)/server_any_of2_test.Po

@@ -71,7 +71,8 @@ collector_runner(void *s)
 	aggregator *aggrs = NULL;
 	server *submission = (server *)s;
 	server **srvs = NULL;
-	char metric[METRIC_BUFSIZ];
+	char mtrc[METRIC_BUFSIZ + sizeof(size_t)]; /* preallocate metric buffer */
+	char *metric = mtrc + sizeof(size_t);
 	char *m = NULL;
 	size_t sizem = 0;
 	size_t (*s_ticks)(server *, unsigned short n) = NULL;
@@ -89,17 +90,13 @@ collector_runner(void *s)
 	size_t (*a_sent)(aggregator *) = NULL;
 	size_t (*a_dropped)(aggregator *) = NULL;
 
+/* mtrc is preallocated, metric = mtrc + sizeof(size_t) */
 #define send(metric) \
 	if (debug & 1) \
 		logout("%s", metric); \
 	else { \
-		size_t len = strlen(metric); \
-		char *mtrc = malloc(sizeof(char) * len + sizeof(len)); \
-		if (mtrc != NULL) { \
-			*((size_t *)mtrc) = len; \
-			memcpy(mtrc + sizeof(len), metric, len); \
-			server_send(submission, mtrc, 1); \
-		} \
+		*((size_t *)mtrc) = strlen(metric); \
+		server_send(submission, mtrc, 1); \
 	}
 
 	nextcycle = time(NULL) + collector_interval;
@@ -153,7 +150,7 @@ collector_runner(void *s)
 			}
 
 			/* prepare prefix for graphite metrics */
-			i = snprintf(metric, sizeof(metric), "%s%s",
+			i = snprintf(metric, METRIC_BUFSIZ, "%s%s",
 					stub == NULL ? "" : stub, prefix);
 			m = metric + i;
 			*m++ = '.';
@@ -244,13 +241,13 @@ collector_runner(void *s)
 			send(metric);
 
 #define send_server_conn_metrics(ipbuf, n, ticks, waits, metrics) \
-			snprintf(m, sizem, "destinations.%s.conns.%u.sent %zu %zu\n", \
+			snprintf(m, sizem, "destinations.%s.connections.%u.sent %zu %zu\n", \
 					ipbuf, n, metrics, (size_t)now); \
 			send(metric); \
-			snprintf(m, sizem, "destinations.%s.conns.%u.wallTime_us %zu %zu\n", \
+			snprintf(m, sizem, "destinations.%s.connections.%u.wallTime_us %zu %zu\n", \
 					ipbuf, n, ticks, (size_t)now); \
 			send(metric); \
-			snprintf(m, sizem, "destinations.%s.conns.%u.waitTime_us %zu %zu\n", \
+			snprintf(m, sizem, "destinations.%s.connections.%u.waitTime_us %zu %zu\n", \
 					ipbuf, n, waits, (size_t)now); \
 			send(metric);
 
