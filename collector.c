@@ -71,8 +71,7 @@ collector_runner(void *s)
 	aggregator *aggrs = NULL;
 	server *submission = (server *)s;
 	server **srvs = NULL;
-	char mtrc[METRIC_BUFSIZ + sizeof(size_t)]; /* preallocate metric buffer */
-	char *metric = mtrc + sizeof(size_t);
+	char metric[METRIC_BUFSIZ];
 	char *m = NULL;
 	size_t sizem = 0;
 	size_t (*s_ticks)(server *, unsigned short n) = NULL;
@@ -90,13 +89,17 @@ collector_runner(void *s)
 	size_t (*a_sent)(aggregator *) = NULL;
 	size_t (*a_dropped)(aggregator *) = NULL;
 
-/* mtrc is preallocated, metric = mtrc + sizeof(size_t) */
 #define send(metric) \
 	if (debug & 1) \
 		logout("%s", metric); \
 	else { \
-		*((size_t *)mtrc) = strlen(metric); \
-		server_send(submission, mtrc, 1); \
+		size_t len = strlen(metric); \
+		char *mtrc = malloc(sizeof(char) * len + sizeof(len)); \
+		if (mtrc != NULL) { \
+			*((size_t *)mtrc) = len; \
+			memcpy(mtrc + sizeof(len), metric, len); \
+			server_send(submission, mtrc, 1); \
+		} \
 	}
 
 	nextcycle = time(NULL) + collector_interval;
