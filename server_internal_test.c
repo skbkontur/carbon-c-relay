@@ -410,12 +410,7 @@ CTEST2(server_ssl_tcp, connect_and_send) {
 int main(int argc, const char *argv[]) {
     int ret;
 #ifdef HAVE_SSL
-    char *dir = dirname(__FILE__);
-    char cur_dir[256];
-    if (strcmp(dir, ".") == 0) {
-        getcwd(cur_dir, sizeof(cur_dir));
-        dir = cur_dir;
-    }
+    const char *dir = dirname((char *) argv[0]);
     pemcert = malloc(strlen(dir) + 25);    
     sprintf(pemcert, "%s/%s", dir, "test/buftest.ssl.cert");
 #endif    
@@ -426,6 +421,8 @@ int main(int argc, const char *argv[]) {
     /* for prevent sanitizers leak detect */
     libevent_global_shutdown();
 #endif
-    free(pemcert);    
+#ifdef HAVE_SSL
+    free(pemcert);
+#endif    
     return ret;
 }
