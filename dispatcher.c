@@ -163,13 +163,14 @@ socknew(size_t isize, size_t *osize)
 static inline ssize_t
 sockread(z_strm *strm, void *buf, size_t sze)
 {
+	/*debug */
+	/*
 	ssize_t n = read(strm->hdl.sock, buf, sze);
 	((char *) buf)[n] = '\0';
-	if (n > 0 && strstr(buf, "_collector_stub") != NULL) {
-		logout("sockread %s\n", buf);
-	}
+	logout("sockread:(%d) '%s'\n", strm->hdl.sock, (char *) buf);
 	return n;
-	//return read(strm->hdl.sock, buf, sze);
+	*/
+	return read(strm->hdl.sock, buf, sze);
 }
 
 static inline int
@@ -1629,10 +1630,6 @@ dispatch_connection(connection *conn, dispatcher *self, struct timeval start)
 #ifdef ENABLE_TRACE
 			conn->buf[conn->buflen] = '\0';
 #endif
-		}
-
-		if (strstr(conn->buf, "_collector_stub") != NULL) {
-			logout("read %s\n", conn->buf);
 		}
 
 		dispatch_received_metrics(conn, self);

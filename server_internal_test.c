@@ -67,6 +67,44 @@ static int maxstalls = 4;
 static unsigned short iotimeout = 600;
 static int sockbufsize = 0;
 
+CTEST_DATA(sock_strm) {
+    z_strm *strm;
+};
+
+CTEST_SETUP(sock_strm) {
+    server_socketnew(&data->strm, METRIC_BUFSIZ);
+}
+
+CTEST_TEARDOWN(sock_strm) {
+    if (data->strm) {
+        data->strm->strmfree(data->strm);
+    }
+
+}
+
+CTEST2(sock_strm, sock_write) {
+    size_t i;
+    size_t nmetrics = 4;
+    char *metrics[4];
+    metrics[0] = "AB.C 12 3\n";
+    metrics[1] = "D.EF 356.0 12\n";
+    metrics[2] = "D;a=B;c=E 586.2 27\n";
+    metrics[3] = "K.L 98.0 464\n";
+    char buf[METRIC_BUFSIZ];
+    buf[0] = '\0';
+
+    ASSERT_NOT_NULL_D(data->strm, "strm init");
+
+    for (i = 0; i < nmetrics; i++) {
+        char *b = server_strmbuf(data->strm);
+
+        data->strm->strmwrite(data->strm, metrics[i], strlen(metrics[i]));
+        strcat(buf, metrics[i]);
+        b[server_strmbuflen(data->strm)] = '\0';
+        ASSERT_STR_D(buf, b, "buffer mismatch");
+    }
+}
+
 static char *metricll(long long n) {
     char *s = malloc(256);
     if (s != NULL) {

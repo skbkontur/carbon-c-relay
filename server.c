@@ -109,6 +109,15 @@ struct _server {
 	size_t prevrequeue;
 };
 
+/* only for testing */
+char *server_strmbuf(z_strm *strm) {
+	return strm->obuf;
+}
+
+/* only for testing */
+size_t server_strmbuflen(z_strm *strm) {
+	return strm->obuflen;
+}
 
 /* connection specific writers and closers */
 
@@ -119,15 +128,29 @@ static inline ssize_t
 sockwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+	if (strm->obuflen + sze > strm->obufsize) {
 		/* need to flush */
 		errno = ENOBUFS;
 		return -1;
 	}
 
+	/* debug */
+	/*
+	strm->obuf[strm->obuflen] = '\0';
+	((char *) buf)[sze] = '\0';
+	logout("sockbuf before:%d '%s'\n", strm->hdl.sock, strm->obuf);
+	logout("sockwrite:%d '%s'\n", strm->hdl.sock, buf);
+	*/
+
 	/* append metric to buf */
 	memcpy(strm->obuf + strm->obuflen, buf, sze);
 	strm->obuflen += sze;
+
+	/* debug */
+	/*
+	strm->obuf[strm->obuflen] = '\0';
+	logout("sockbuf after:(%d) '%s'\n", strm->hdl.sock, strm->obuf);
+	*/
 
 	return sze;
 }
@@ -143,6 +166,13 @@ sockflush(z_strm *strm)
 		return 0;
 	p = strm->obuf + strm->obufpos;
 	len = strm->obuflen - strm->obufpos;
+
+	/* debug */
+	/*
+	strm->obuf[strm->obuflen] = '\0';
+	logout("sockflush:%zu(%d) '%s'\n", strm->obuflen, strm->hdl.sock, strm->obuf);
+	*/
+
 	/* Flush stream, this may not succeed completely due
 	 * to flow control and whatnot, which the docs suggest need
 	 * resuming to complete.  So, use a loop, but to avoid
@@ -154,6 +184,8 @@ sockflush(z_strm *strm)
 				p += slen;
 				len -= slen;
 			} else if (errno != EINTR) {
+				/* debug */
+				/* logout("sockflush:%d errno %d espected %zu\n", strm->hdl.sock, errno, len); */
 				strm->obufpos = p - strm->obuf;
 				return -1;
 			}
@@ -165,6 +197,8 @@ sockflush(z_strm *strm)
 	}
 	/* so slow, throttle */
 	errno = EAGAIN;
+	/* debug */
+	/* logout("sockflush:%d errno %d espected %zu\n", strm->hdl.sock, errno, len); */
 	return -1;
 }
 
@@ -190,29 +224,29 @@ sockerror(z_strm *strm, int rval)
 }
 
 /* allocate new connection */
-static int
-socketnew(server *s, int osize, unsigned short n) {
-	s->conns[n].strm = malloc(sizeof(z_strm));
-	if (s->conns[n].strm == NULL) {
+int
+server_socketnew(z_strm **strm, int osize) {
+	*strm = malloc(sizeof(z_strm));
+	if (*strm == NULL) {
 		logerr("failed to alloc socket stream: out of memory\n");
 		return -1;
 	}
-	s->conns[n].strm->obufpos = 0;
-	s->conns[n].strm->obuflen = 0;
-	s->conns[n].strm->nextstrm = NULL;
+	(*strm)->obufpos = 0;
+	(*strm)->obuflen = 0;
+	(*strm)->nextstrm = NULL;
 
-	s->conns[n].strm->obufsize = osize;
+	(*strm)->obufsize = osize;
 
-	s->conns[n].strm->strmwrite = &sockwrite;
-	s->conns[n].strm->strmflush = &sockflush;
-	s->conns[n].strm->strmclose = &sockclose;
-	s->conns[n].strm->strmerror = &sockerror;
-	s->conns[n].strm->strmfree = &sockfree;
+	(*strm)->strmwrite = &sockwrite;
+	(*strm)->strmflush = &sockflush;
+	(*strm)->strmclose = &sockclose;
+	(*strm)->strmerror = &sockerror;
+	(*strm)->strmfree = &sockfree;
 
-	s->conns[n].strm->obuf = malloc(s->conns[n].strm->obufsize);
-	if (s->conns[n].strm->obuf == NULL) {
-		s->conns[n].strm->strmfree(s->conns[n].strm);
-		s->conns[n].strm = NULL;
+	(*strm)->obuf = malloc((*strm)->obufsize);
+	if ((*strm)->obuf == NULL) {
+		(*strm)->strmfree(*strm);
+		*strm = NULL;
 		logerr("failed to alloc socket stream buffer: out of memory\n");
 		return -1;
 	}
@@ -228,7 +262,7 @@ static inline ssize_t
 gzipwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+	if (strm->obuflen + sze > strm->obufsize) {
 		/* need to flush */
 		errno = ENOBUFS;
 		return -1;
@@ -404,7 +438,7 @@ static inline ssize_t
 lzwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+	if (strm->obuflen + sze > strm->obufsize) {
 		/* need to flush */
 		errno = ENOBUFS;
 		return -1;
@@ -534,7 +568,7 @@ static inline ssize_t
 snappywrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ)
+	if (strm->obuflen + sze > strm->obufsize)
 		if (snappyflush(strm) != 0)
 			return -1;
 
@@ -651,7 +685,7 @@ static inline ssize_t
 sslwrite(z_strm *strm, const void *buf, size_t sze)
 {
 	/* ensure we have space available */
-	if (strm->obuflen + sze > METRIC_BUFSIZ) {
+	if (strm->obuflen + sze > strm->obufsize) {
 		errno = ENOBUFS;
 		return -1;
 	}
@@ -1216,13 +1250,15 @@ int server_connect(server *self, unsigned short n)
 			}
 
 			/* make socket blocking again */
-			// if (fcntl(self->fd, F_SETFL, args) < 0) {
-			// 	logerr("failed to remove socket non-blocking "
-			// 			"mode: %s\n", strerror(errno));
-			// 	close(self->fd);
-			// 	self->fd = -1;
-			// 	return -1;
-			// }
+			/*
+			if (fcntl(self->conns[n].fd, F_SETFL, args) < 0) {
+				logerr("failed to remove socket non-blocking "
+						"mode: %s\n", strerror(errno));
+				close(self->conns[n].fd);
+				self->conns[n].fd = -1;
+				return -1;
+			}
+			*/
 
 			/* disable Nagle's algorithm, issue #208 */
 			args = 1;
@@ -1359,9 +1395,8 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 			}
 			mlen = *(size_t *)metric;
 			m = metric + sizeof(size_t);
-			if (strstr(m+1, "_collector_stub") != NULL) {
-				logout("dequeue %s", m);
-			}
+			/* debug */
+			/* logout("dequeue:%s:%d(%d):%zu '%s'\n", self->ip, self->port, self->conns[n].fd, queue_len(q), m); */
 			self->conns[n].batch[self->conns[n].len] = metric;
 			slen = self->conns[n].strm->strmwrite(self->conns[n].strm, m, mlen);
 			if (slen == -1 && (errno == ENOBUFS || errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -1852,7 +1887,7 @@ server_new(
 		} else
 	#endif
 		{
-			if (socketnew(ret, METRIC_BUFSIZ, i) == -1) {
+			if (server_socketnew(&ret->conns[i].strm, METRIC_BUFSIZ) == -1) {
 				server_cleanup(ret);
 				return NULL;
 			}
@@ -2062,12 +2097,7 @@ server_set_instance(server *self, char *instance)
 inline char
 server_send(server *s, const char *d, char force)
 {
-	const char *m = d + sizeof(size_t);
 	size_t qfree = queue_free(s->queue);
-	/* DEBUG */
-	if (strstr(m+1, "_collector_stub") != NULL && strstr(m, "_collector_stub") != m) {
-		logout("send %s", m);
-	}
 	if (!s->shared_queue) {
 		/* check for overloaded destination */
 		if (!force && s->secondariescnt > 0 &&
@@ -2089,6 +2119,8 @@ server_send(server *s, const char *d, char force)
 			if (squeue != s->queue) {
 				__sync_add_and_fetch(&(s->requeue), 1);
 				queue_enqueue(squeue, d);
+				/* debug */
+				/* logout("enqueue:%s:%d:%zu '%s'\n", s->ip, s->port, queue_len(s->queue), d + sizeof(size_t)); */
 				return 1;
 			}
 		}
@@ -2119,6 +2151,8 @@ server_send(server *s, const char *d, char force)
 	} else {
 		__sync_and_and_fetch(&(s->stallseq), 0);
 	}
+	/* debug */
+	/* logout("enqueue:%s:%d:%zu '%s'\n", s->ip, s->port, queue_len(s->queue), d + sizeof(size_t)); */
 	queue_enqueue(s->queue, d);
 
 	return 1;

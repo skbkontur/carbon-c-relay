@@ -67,6 +67,11 @@ typedef struct _z_strm {
 	} hdl;
 } z_strm;
 
+char *server_strmbuf(z_strm *strm);
+size_t server_strmbuflen(z_strm *strm);
+
+int server_socketnew(z_strm **strm, int osize);
+
 queue *server_queue(server *s);
 int server_connect(server *self, unsigned short n);
 int server_disconnect(server *self, unsigned short n);
