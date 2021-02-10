@@ -21,16 +21,6 @@ jobs:
             build_type: "Release", cc: "clang", cxx: "clang++"
           }
         - {
-            name: "Ubuntu 18.04 GCC", artifact: "Linux.tar.xz",
-            os: ubuntu-18.04,
-            build_type: "Release", cc: "gcc", cxx: "g++"
-          }
-        - {
-            name: "Ubuntu 18.04 Clang", artifact: "Linux.tar.xz",
-            os: ubuntu-18.04,
-            build_type: "Release", cc: "clang", cxx: "clang++"
-          }
-        - {
             name: "macOS 11.0 Clang", artifact: "macOS.tar.xz",
             os: macos-11.0,
             build_type: "Release", cc: "clang", cxx: "clang++"
@@ -46,7 +36,7 @@ jobs:
                 libonig-dev \
                 libpcre3-dev \
                 zlib1g-dev \
-                liblz4-tool \
+                liblz4-dev liblz4-tool \
                 libssl-dev \
                 libevent-dev \
           || exit 1
