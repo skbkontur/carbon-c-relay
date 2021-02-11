@@ -966,7 +966,7 @@ int server_setup(server *self, unsigned short n) {
 #ifdef SO_NOSIGPIPE
 	if (self->ctype == CON_TCP || self->ctype == CON_UDP) {
 		int enable = 1;
-		if (setsockopt(self->fd, SOL_SOCKET, SO_NOSIGPIPE,
+		if (setsockopt(self->conns[n].fd, SOL_SOCKET, SO_NOSIGPIPE,
 					(void *)&enable, sizeof(enable)) != 0)
 			logout("warning: failed to ignore SIGPIPE on socket: %s\n",
 					strerror(errno));
@@ -1479,6 +1479,7 @@ static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, 
 		if (fd == ufds[*cur_pos].fd) {
 			return &ufds[*cur_pos];
 		}
+#pragma GCC diagnostic push		
 #pragma GCC diagnostic ignored "-Wunused-value"
 		*cur_pos++;
 #pragma GCC diagnostic pop
@@ -1605,13 +1606,13 @@ cluster_queuereader(void *d)
 				if (ss->server->qfree_threshold != ss->server->threshold_start && ! overload) {
 					/* threshold for cancel rebalance */
 					ss->server->qfree_threshold = ss->server->threshold_start;
-					if (mode && MODE_DEBUG)
+					if (mode & MODE_DEBUG)
 						tracef("throttle end %s:%u: waiting for %zu metrics\n",
 								ss->server->ip, ss->server->port, queue_len(self->queue));
 				} else if (ss->server->qfree_threshold == ss->server->threshold_start && overload) {
 					/* destination overloaded, set threshold for destination recovery */
 					ss->server->qfree_threshold = ss->server->threshold_end;
-					if (mode && MODE_DEBUG)
+					if (mode & MODE_DEBUG)
 						tracef("throttle %s:%u: waiting for %zu metrics\n",
 								ss->server->ip, ss->server->port, queue_len(self->queue));
 				}		
@@ -1654,13 +1655,13 @@ cluster_queuereader(void *d)
 						if (s->server->qfree_threshold != s->server->threshold_start && ! overload) {
 							/* threshold for cancel rebalance */
 							s->server->qfree_threshold = s->server->threshold_start;
-							if (mode && MODE_DEBUG)
+							if (mode & MODE_DEBUG)
 								tracef("throttle end %s:%u: waiting for %zu metrics\n",
 										s->server->ip, s->server->port, queue_len(s->server->queue));
 						} else if (s->server->qfree_threshold == ss->server->threshold_start && overload) {
 							/* destination overloaded, set threshold for destination recovery */
 							s->server->qfree_threshold = ss->server->threshold_end;
-							if (mode && MODE_DEBUG)
+							if (mode & MODE_DEBUG)
 								tracef("throttle %s:%u: waiting for %zu metrics\n",
 										s->server->ip, s->server->port, queue_len(s->server->queue));
 						}
