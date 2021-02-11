@@ -292,6 +292,7 @@ use of UDP or TCP to connect to the remote server.  When omitted the
 connection defaults to an unwrapped TCP connection.  `type` can only be
 linemode at the moment.
 Optional `connections` can be used for connections number per server (default to 1).
+Optional `ttl` (minutes) can be used for periodical reconnecting all connections in one time (for example rebalance needed).
 Optional `threshold_start` and `threshold_end` is clusterwide options like global `threshold_start` and `threshold_end`.
 
 DNS hostnames are resolved to a single address, according to the preference

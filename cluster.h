@@ -67,6 +67,8 @@ typedef struct _cluster {
 	int threshold_start;
 	int threshold_end;
 	pthread_t tid;
+	size_t ttl; /* ttl seconds */
+	size_t connect_ts; /* connect timestamp (seconds) for ttl */
 	char isdynamic:1;
 	queue *queue;
 	union {
@@ -111,7 +113,8 @@ typedef struct _route {
 	struct _route *next;
 } route;
 
-cluster *cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize);
+size_t cluster_ttl(int ttl_minutes);
+cluster *cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize, size_t ttl_minutes);
 int cluster_set_threshold(cluster *cl, int threshold_start, int threshold_end);
 void cluster_free(cluster *cl);
 char cluster_start(cluster *c);

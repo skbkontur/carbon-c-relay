@@ -101,7 +101,7 @@ noinst_PROGRAMS = test_router
 test_router_SOURCES = router_test.c $(SOURCES)
 test_router_LDADD = $(RELAY_LIBS)
 
-noinst_PROGRAMS = test_dispatcher
+noinst_PROGRAMS += test_dispatcher
 test_dispatcher_SOURCES = dispatcher_test.c $(SOURCES)
 test_dispatcher_LDADD = $(RELAY_LIBS)
 

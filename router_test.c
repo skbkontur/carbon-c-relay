@@ -74,6 +74,17 @@ static unsigned short iotimeout = 600;
 static unsigned short listenport = 2003;
 static int sockbufsize = 0;
 
+CTEST(cluster_test, cluster_ttl) {
+    ASSERT_EQUAL(1 * 60, cluster_ttl(1));
+    ASSERT_EQUAL(3 * 60, cluster_ttl(3));
+    ASSERT_EQUAL(10 * 60, cluster_ttl(10));
+    ASSERT_EQUAL(11 * 60, cluster_ttl(11));
+    ASSERT_EQUAL(60 * 60, cluster_ttl(60));
+    ASSERT_EQUAL(61 * 60, cluster_ttl(61));
+    ASSERT_EQUAL(70 * 60, cluster_ttl(70));
+    ASSERT_EQUAL(71 * 60, cluster_ttl(71));
+}
+
 queue *server_queue(server *s);
 
 CTEST_DATA(router_test) {

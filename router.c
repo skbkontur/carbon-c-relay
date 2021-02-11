@@ -993,8 +993,20 @@ router_add_aggregator(router *rtr, aggregator *a)
 	return NULL;
 }
 
+/* ttl in seconds */
+size_t cluster_ttl(int ttl_minutes) {
+	size_t hours, minutes;
+	if (ttl_minutes <= 0) {
+		return 0;
+	}
+	hours = ttl_minutes / 60;
+	minutes = ttl_minutes % 60;
+
+	return (hours * 60 + minutes) * 60;
+}
+
 cluster *
-cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize) {
+cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize, size_t ttl) {
 	cluster *cl = ra_malloc(a, sizeof(cluster));
 	if (cl == NULL) {
 		return NULL;
@@ -1020,6 +1032,9 @@ cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t que
 	cl->members.routes = m;
 	cl->running = 0;
 	cl->keep_running = SERVER_KEEP_RUNNING;
+
+	cl->ttl = ttl;
+	cl->connect_ts = 0;
 
 	cl->tid = 0;
 
@@ -1063,7 +1078,7 @@ router_add_stubroute(
 	if (d == NULL)
 		return ra_strdup(rtr->a, "malloc failed for stub destinations");
 	d->next = NULL;
-	cl = d->cl = cluster_new(NULL, rtr->a, type, m, rtr->conf.queuesize);
+	cl = d->cl = cluster_new(NULL, rtr->a, type, m, rtr->conf.queuesize, 0);
 	if (cl == NULL)
 		return ra_strdup(rtr->a, "malloc failed for stub cluster");
 	err = router_add_cluster(rtr, cl);
@@ -1341,7 +1356,7 @@ router_readconfig(router *orig,
 		ret->conf.sockbufsize = sockbufsize;
 
 		/* create virtual blackhole cluster */
-		cl = cluster_new("blackhole", ret->a, BLACKHOLE, NULL, 0);
+		cl = cluster_new("blackhole", ret->a, BLACKHOLE, NULL, 0, 0);
 		if (cl == NULL) {
 			logerr("malloc failed for blackhole cluster\n");
 			router_free(ret);
@@ -2111,6 +2126,9 @@ router_printconfig(router *rtr, FILE *f, char pmode)
 		}
 		if (c->threshold_end != 0) {
 			fprintf(f, "    threshold_end %d\n", c->threshold_end);
+		}
+		if (c->ttl != 0) {
+			fprintf(f, "    ttl %zu\n", c->ttl / 60);
 		}
 		fprintf(f, "    ;\n");
 		if (pmode & PMODE_HASH) {

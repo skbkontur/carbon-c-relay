@@ -64,6 +64,7 @@ struct _rcptr_trsp {
 %token crFORWARD crANY_OF crFAILOVER crCARBON_CH crFNV1A_CH crJUMP_FNV1A_CH
 	crFILE crIP crREPLICATION crDYNAMIC crPROTO crUSEALL crUDP crTCP crCONNECTIONS
 	crTHRESHOLD_START crTHRESHOLD_END
+	crTTL
 %type <enum clusttype> cluster_useall cluster_ch
 %type <struct _clust> cluster_type cluster_file
 %type <int> cluster_opt_repl cluster_opt_useall cluster_opt_dynamic
@@ -73,6 +74,7 @@ struct _rcptr_trsp {
 %type <int> server_connections
 %type <int> threshold_start
 %type <int> threshold_end
+%type <int> ttl
 %type <cluster *> cluster
 %type <struct _clhost *> cluster_host cluster_hosts cluster_opt_host
 	cluster_path cluster_paths cluster_opt_path
@@ -147,7 +149,7 @@ command: cluster
 	   ;
 
 /*** {{{ BEGIN cluster ***/
-cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] server_connections[connections] threshold_start threshold_end
+cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] server_connections[connections] threshold_start threshold_end ttl
 	   {
 	   	struct _clhost *w;
 		char *err;
@@ -158,12 +160,12 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] serv
 		for (srvcnt = 0, w = $servers; w != NULL; w = w->next, srvcnt++)
 			;
 
-		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr))) == NULL) {
+		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr), cluster_ttl($ttl))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
 			YYABORT;
 		}
 		if (cluster_set_threshold($$, $threshold_start, $threshold_end) == -1) {
-			exit(1);
+			YYABORT;
 		}
 		switch ($$->type) {
 			case CARBON_CH:
@@ -219,17 +221,17 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers] serv
 			YYERROR;
 		}
 	   }
-	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths] server_connections[connections] threshold_start threshold_end
+	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths] server_connections[connections] threshold_start threshold_end ttl
 	   {
 	   	struct _clhost *w;
 		char *err;
 
-		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr))) == NULL) {
+		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr), cluster_ttl($ttl))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
 			YYABORT;
 		}
 		if (cluster_set_threshold($$, $threshold_start, $threshold_end) == -1) {
-			exit(1);
+			YYABORT;
 		}
 		switch ($$->type) {
 			case FILELOG:
@@ -300,6 +302,10 @@ threshold_start:                  { $$ = 0; }
 
 threshold_end:                  { $$ = 0; }
 				 | crTHRESHOLD_END crINTVAL[cnt] { $$ = $cnt; }
+				 ;
+
+ttl:                            { $$ = 0; }
+				 | crTTL crINTVAL[cnt] { $$ = $cnt; }
 				 ;
 
 cluster_file: crFILE crIP { $$.t = FILELOGIP; $$.ival = 0; }
@@ -454,7 +460,7 @@ match: crMATCH match_exprs[exprs] match_opt_validate[val]
 				YYABORT;
 			}
 			d->next = NULL;
-			if ((d->cl = cluster_new(NULL, ralloc, VALIDATION, NULL, 0)) == NULL) {
+			if ((d->cl = cluster_new(NULL, ralloc, VALIDATION, NULL, 0, 0)) == NULL) {
 				logerr("out of memory\n");
 				YYABORT;
 			}
@@ -619,7 +625,7 @@ rewrite: crREWRITE crSTRING[expr] crINTO crSTRING[replacement]
 			YYERROR;
 		}
 		
-		cl = cluster_new(NULL, ralloc, REWRITE, NULL, 0);
+		cl = cluster_new(NULL, ralloc, REWRITE, NULL, 0, 0);
 		if (cl == NULL) {
 			logerr("out of memory\n");
 			YYABORT;
@@ -679,7 +685,7 @@ aggregate: crAGGREGATE match_exprs2[exprs] crEVERY crINTVAL[intv] crSECONDS
 				YYERROR;
 			}
 
-			w = cluster_new(NULL, ralloc, AGGREGATION, NULL, 0);
+			w = cluster_new(NULL, ralloc, AGGREGATION, NULL, 0, 0);
 			if (w == NULL) {
 				logerr("malloc failed for aggregate\n");
 				YYABORT;

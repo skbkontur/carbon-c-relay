@@ -93,6 +93,7 @@ cluster				{
 <idcl>connections		return crCONNECTIONS;
 <idcl>threshold_start	return crTHRESHOLD_START;
 <idcl>threshold_end		return crTHRESHOLD_END;
+<idcl>ttl	    return crTTL;
 
 match				{
 						identstate = idma;

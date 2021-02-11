@@ -1487,17 +1487,33 @@ static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, 
 	return NULL;
 }
 
-static void servers_check_timeouts(servers *ss, struct timeval now) {
+static void servers_check_timeouts_and_ttl(servers *ss, struct timeval now, cluster *cl) {
 	servers *s;
+	int disconnect = 0;
+	if (cl->ttl > 0) {
+		ssize_t tdiff = now.tv_sec - cl->connect_ts;
+		if (cl->connect_ts == 0 || tdiff < 0) {
+			cl->connect_ts = now.tv_sec;
+		} else if (tdiff >= cl->ttl) {
+			disconnect = 1;
+			cl->connect_ts = now.tv_sec;
+			logout("ttl reached for servers in cluster %s, reconnecting\n", cl->name);
+		}
+	}
 	for (s = ss; s != NULL; s = s->next) {
 		size_t i;
 		for (i = 0; i < s->server->nconns; i++) {
 			if (s->server->conns[i].fd > -1) {
-				ssize_t duration = timediff(now, s->server->conns[i].last);
-				if (duration >= DISCONNECT_WAIT_TIME) {
-					logout("timeout server %s:%u (%u)\n",
-							ss->server->ip, ss->server->port, i);
+				if (disconnect) {
 					server_disconnect(s->server, i);
+					server_connect(s->server, i);
+				} else {
+					ssize_t duration = timediff(now, s->server->conns[i].last);
+					if (duration >= DISCONNECT_WAIT_TIME) {
+						logout("timeout server %s:%u (%u)\n",
+								ss->server->ip, ss->server->port, i);
+						server_disconnect(s->server, i);
+					}
 				}
 			}
 		}
@@ -1678,7 +1694,7 @@ cluster_queuereader(void *d)
 		}
 
 		gettimeofday(&now, NULL);
-		servers_check_timeouts(ss, now);
+		servers_check_timeouts_and_ttl(ss, now, self);
 	}
 
 	cluster_disconnect(self);
