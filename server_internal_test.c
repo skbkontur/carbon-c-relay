@@ -131,6 +131,7 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
             break;
         }
     }
+    server_poll(s, 0);
     strm = server_get_strm(s, 0);
 
     // connection must successed
