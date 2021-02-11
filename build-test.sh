@@ -39,12 +39,12 @@ SANITIZE="0"
 
 [ "${SANITIZE}" = "0" ] && {
 	econf="./configure --disable-maintainer-mode"
-	[ -z "${CFLAGS}" ] && CFLAGS="-O3 -Wall -Werror -Wshadow -D_GNU_SOURCE -pipe"
+	[ -z "${CFLAGS}" ] && CFLAGS="-O3 -g -Wall -Werror -Wshadow -D_GNU_SOURCE -pipe"
 } || {
 	#export ac_cv_func_malloc_0_nonnull=yes
 	export ac_cv_func_malloc_0_nonnull=yes ac_cv_func_realloc_0_nonnull=yes
 	econf="./configure --disable-maintainer-mode --with-gnu-ld"
-	[ -z "${CFLAGS}" ] && CFLAGS="-O0 -Wall -Werror -Wshadow -D_GNU_SOURCE -pipe"
+	[ -z "${CFLAGS}" ] && CFLAGS="-O0 -g -Wall -Werror -Wshadow -D_GNU_SOURCE -pipe"
 	CFLAGS="${CFLAGS} ${SCFLAGS}"
 	LDFLAGS="${LDFLAGS} ${SLDFLAGS}"
 }

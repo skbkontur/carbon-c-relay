@@ -421,6 +421,13 @@ router *router_new(void) {
 	ret->srvrs = NULL;
 	ret->clusters = NULL;
 
+	ret->listeners = NULL;
+
+	ret->collector.stub = NULL;
+	ret->collector.prefix = NULL;
+
+	ret->parser_err.msg = NULL;
+
 	return ret;
 }
 

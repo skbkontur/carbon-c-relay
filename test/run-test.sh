@@ -33,8 +33,10 @@ CNFCLN=( sed -e '/^configuration:/,/^parsed configuration follows:/d'
 	fi
 }
 
+VALGRIND_EXEC="valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=128"
+
 [ "${VALGRIND}" = "1" ] && {
-	EXEC="valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=128 ${EXEC}"
+	EXEC="${VALGRIND_EXEC} ${EXEC}"
 }
 
 buftest_generate() {
@@ -576,9 +578,13 @@ for test in ../test_* ; do
 	[ -x "${test}" ] || continue
 	echo "# $( basename ${test} )"
 	[ "${VALGRIND}" = "1" ] && {
-		valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=128 ${test} || ufail=1
+		${VALGRIND_EXEC} ${test} || ufail=1
 	} || {
-		${test} || ufail=1
+		${test} || {
+			ret="`kill -l $(($?-128))`"
+			ufail=1
+			echo "exit with SIG${ret}" >&2
+		}
 	}
 done
 [ "${ufail}" == "1" ] && exit 1
