@@ -496,7 +496,7 @@ lznew(size_t isize, z_strm *basestrm, size_t *osize)
 		return NULL;
 	}
 	if (LZ4F_isError(LZ4F_createDecompressionContext(&lzstrm->hdl.lz4.lz, LZ4F_VERSION))) {
-		errno = EBADR;
+		errno = EINVAL;
 		free(lzstrm);
 		return NULL;
 	}
@@ -749,7 +749,7 @@ connection_strm_new(int sock, char *srcaddr, con_proto ctype, con_trnsp transpor
 	else if (compress_type == W_LZ4) {
 		z_strm *lzstrm = lznew(METRIC_BUFSIZ, strm, osize);
 		if (lzstrm == NULL) {
-			if (errno == EBADR) {
+			if (errno == EINVAL) {
 				logerr("Failed to create LZ4 decompression context\n");
 			} else {
 				logerr("cannot add new connection: "
