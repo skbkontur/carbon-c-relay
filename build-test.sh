@@ -76,7 +76,7 @@ if ${econf} --with-gzip --with-lz4 --with-ssl ; then
 fi
 fi
 # test the regex implementations
-if [ $TRAVIS_OS_NAME = osx ] ; then
+if [ `uname` == "Darwin" ] ; then
 	echo "==> pcre2 enabled"
 	${econf} --without-oniguruma --with-pcre2 --without-pcre || exit
 	make CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}" clean check || exit 1

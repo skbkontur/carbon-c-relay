@@ -21,8 +21,8 @@ jobs:
             build_type: "Release", cc: "clang", cxx: "clang++"
           }
         - {
-            name: "macOS 11.0 Clang", artifact: "macOS.tar.xz",
-            os: macos-11.0,
+            name: "macOS 10.15 Clang", artifact: "macOS.tar.xz",
+            os: macos-10.15,
             build_type: "Release", cc: "clang", cxx: "clang++"
           }
           
@@ -41,12 +41,8 @@ jobs:
                 libevent-dev \
           || exit 1
         elif [ "$RUNNER_OS" == "macOS" ]; then
-          sudo brew install \
-              lz4 \
-              pcre \
-              pcre2 \
-              libressl \
-          || exit 1
+          # oniguruma is useless since onigposix.h isn't shipped
+          brew install lz4 pcre pcre2 libressl || exit 1
         else
           echo "$RUNNER_OS not supported"
           exit 1
