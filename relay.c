@@ -845,6 +845,9 @@ main(int argc, char * const argv[])
 		fprintf(relay_stdout, "    send batch size = %d\n", batchsize);
 		fprintf(relay_stdout, "    server queue size = %d\n", queuesize);
 		fprintf(relay_stdout, "    server max stalls = %d\n", maxstalls);
+		fprintf(relay_stdout, "    server queue free threshold start = %d\n", queuefree_threshold_start);
+		fprintf(relay_stdout, "    server queue free threshold end = %d\n", queuefree_threshold_end);
+		fprintf(relay_stdout, "    server shutdown timeout = %d\n", shutdown_timeout);
 		fprintf(relay_stdout, "    listen backlog = %u\n", listenbacklog);
 		if (sockbufsize > 0)
 			fprintf(relay_stdout, "    socket bufsize = %u\n", sockbufsize);
