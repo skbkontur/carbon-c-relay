@@ -9,8 +9,15 @@
 # Run build and tests under valgrind
 # VALGRIND=1 ./build-test.sh
 
+OS_NAME="`uname`"
+
 SCFLAGS="-fno-omit-frame-pointer -fstack-protector-strong -g"
 SLDFLAGS="-fno-omit-frame-pointer -fstack-protector-strong -lrt -pthread"
+
+if [ "${OS_NAME}" == "FreeBSD" ] ; then
+	SCFLAGS="${SCFLAGS} -I/usr/local/include"
+	SLDFLAGS="${SLDFLAGS} -L/usr/local/lib"
+fi
 
 SANITIZE="0"
 [ "${ASAN}" = "1" ] && {
@@ -76,7 +83,7 @@ if ${econf} --with-gzip --with-lz4 --with-ssl ; then
 fi
 fi
 # test the regex implementations
-if [ `uname` == "Darwin" ] ; then
+if [ "${OS_NAME}" == "Darwin" ] ; then
 	echo "==> pcre2 enabled"
 	${econf} --without-oniguruma --with-pcre2 --without-pcre || exit
 	make CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}" clean check || exit 1

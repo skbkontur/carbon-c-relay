@@ -539,7 +539,6 @@ run_reloadtest() {
 		fi
 	elif [ "${ret}" != "0" ]; then
 		[ "${reload_ret}" == "0" ] && echo FAIL
-		echo "relay exit with SIG$(kill -l $(($ret-128))) signal"
 	else
 		ret=1
 	fi
