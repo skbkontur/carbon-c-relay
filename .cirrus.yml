@@ -30,7 +30,7 @@ task:
           - image: centos:7
     - name: Build on FreeBSD (lz4)
       install_dependencies_script:
-        - pkg install -y oniguruma pcre libevent gmake automake bison flex
+        - pkg install -y bash oniguruma pcre libevent gmake automake bison flex
       script: ./build-test.sh
       freebsd_instance:
         matrix:
