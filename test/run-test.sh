@@ -580,9 +580,7 @@ for test in ../test_* ; do
 		${VALGRIND_EXEC} ${test} || ufail=1
 	} || {
 		${test} || {
-			ret="`kill -l $(($?-128))`"
 			ufail=1
-			echo "exit with SIG${ret}" >&2
 		}
 	}
 done
