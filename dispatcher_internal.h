@@ -23,6 +23,9 @@
 #endif
 
 #include <stddef.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #ifdef HAVE_GZIP
 #include <zlib.h>
