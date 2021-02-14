@@ -41,7 +41,7 @@
 #include "cluster.h"
 
 #define FAIL_WAIT_COUNT   6  /* 6 * 250ms = 1.5s */
-#define DISCONNECT_WAIT_TIME   10 * 1000000  /* 10s */
+#define DISCONNECT_WAIT_TIME 600  /* 10min */
 #define QUEUE_FREE_CRITICAL(FREE, s)  (FREE < s->qfree_threshold)
 
 int queuefree_threshold_start = 0;
@@ -1363,19 +1363,23 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 					self->ip, self->port, n);
 			server_disconnect(self, n);
 			return -1;
-		} else if (!(ufd->revents & POLLOUT)) {
-			logerr("failed to write %s:%u (%u), server poll revents: %d\n",
-					self->ip, self->port, n, ufd->revents);
-			server_disconnect(self, n);
-			return -1;
 		} else if (ufd->revents == 0) {
 			__sync_add_and_fetch(&(self->conns[n].waits), timediff(self->conns[n].last_wait, start));
 			self->conns[n].last_wait = start;
 			errno = EAGAIN;
 			return -1;
+		} else if (!(ufd->revents & POLLOUT)) {
+			logerr("failed to write %s:%u (%u), server poll revents: %d\n",
+					self->ip, self->port, n, ufd->revents);
+			server_disconnect(self, n);
+			return -1;
 		}
 	}
 	
+	if (q == NULL) {
+		q = self->queue;
+	}
+
 	if (keep_running != SERVER_KEEP_RUNNING) {
 		/* be noisy during shutdown so we can track any slowing down
 			* servers, possibly preventing us to shut down */
@@ -1510,7 +1514,7 @@ static void servers_check_timeouts_and_ttl(servers *ss, struct timeval now, clus
 					server_connect(s->server, i);
 				} else {
 					ssize_t duration = timediff(now, s->server->conns[i].last);
-					if (duration >= DISCONNECT_WAIT_TIME) {
+					if (duration >= DISCONNECT_WAIT_TIME * 1000000) {
 						logout("timeout server %s:%u (%u)\n",
 								ss->server->ip, ss->server->port, i);
 						server_disconnect(s->server, i);
@@ -1667,7 +1671,10 @@ cluster_queuereader(void *d)
 						}
 					}
 					overload = QUEUE_FREE_CRITICAL(qfree_min, s_min);
-					if (!overload) {
+					if (overload) {
+						q = s_min->queue;
+					} else {
+						s_min = NULL;
 						q = NULL;
 					}
 				}
@@ -1677,14 +1684,10 @@ cluster_queuereader(void *d)
 					for (k = 0; k < s->server->nconns; k++) {
 						struct pollfd *p = pollfd_find(ufds, n, &i, s->server->conns[k].fd);
 						ssize_t len;
-						if (q) {
-							len = server_queueread(s->server, q, p, keep_running, k);
-							if (len > 0 && s->server != s_min)
-								__sync_add_and_fetch(&(s_min->requeue), (size_t) len);
-						} else {
-							len = server_queueread(s->server, s->server->queue, p, keep_running, k);
-						}
-						if (len < 0) {
+						len = server_queueread(s->server, q, p, keep_running, k);
+						if (len > 0 && s_min != NULL && s->server != s_min) {
+							__sync_add_and_fetch(&(s_min->requeue), (size_t) len);
+						} else if (len < 0) {
 							if (s->server->conns[k].fd == -1) {
 								server_connect(s->server, k);
 							}
