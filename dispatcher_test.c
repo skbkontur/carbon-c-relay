@@ -84,7 +84,7 @@ CTEST_TEARDOWN(dispatcher_test) {
 
 CTEST2(dispatcher_test, dispatch_received_metrics) {
     size_t i;
-    const char *metric, *m;    
+    const char *metric;    
     char *buf = " AB.C 12 3\n" "D.EF 356.0 12\n" "D;a=B;c=E 586.2 27\n" "K";
     size_t nmetrics = 4;
     char *metrics[4];
@@ -104,9 +104,13 @@ CTEST2(dispatcher_test, dispatch_received_metrics) {
     queue *q = server_queue(*router_getservers(data->r));
     
     for (i = 0; i < nmetrics; i++) {
+        char m[METRIC_BUFSIZ];
+        size_t len;
         metric = queue_dequeue(q);
         ASSERT_NOT_NULL_D(metric, metrics[i]);
-        m = metric + sizeof(metric);
+        len = *((size_t *) metric);
+        memcpy(m, metric + sizeof(metric), len);
+        m[len] = '\0';
         ASSERT_STR(metrics[i], m);
     }
 

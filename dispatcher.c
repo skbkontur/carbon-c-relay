@@ -1428,9 +1428,6 @@ dispatch_received_metrics(connection *conn, dispatcher *self)
 	char search_tags;
 
 	q = conn->metric;
-	if (strstr(conn->buf+1, "_collector_stub") != NULL && strstr(conn->buf, "_collector_stub") != conn->buf) {
-		logout("dispatch %s", conn->buf);
-	}
 	firstspace = NULL;
 	lastnl = NULL;
 	search_tags = self->tags_supported;
