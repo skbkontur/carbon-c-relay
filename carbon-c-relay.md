@@ -219,14 +219,16 @@ input until the end of that line:
 
 ```
 cluster <name>
+    [threads <count>]
+    [connections <count>]
+    [ttl <minutes>]
+    [threshold_start <count>] [threshold_end <count>]    
     < <forward | any_of | failover> [useall] |
       <carbon_ch | fnv1a_ch | jump_fnv1a_ch> [replication <count>] [dynamic] >
         <host[:port][=instance] [proto <udp | tcp>]
                                 [type linemode]
                                 [transport <plain | gzip | lz4 | snappy>
                                            [ssl]]> ...
-      [connections <count>]
-      [threshold_start <count> threshold_end <count>]
     ;
 
 cluster <name>
@@ -291,7 +293,8 @@ wrap the connection in a compression or encryption later or specify the
 use of UDP or TCP to connect to the remote server.  When omitted the
 connection defaults to an unwrapped TCP connection.  `type` can only be
 linemode at the moment.
-Optional `connections` can be used for connections number per server (default to 1).
+Optional `threads` can be used for threads number per cluster (default is 1).
+Optional `connections` can be used for connections number per server (default is 1).
 Optional `ttl` (minutes) can be used for periodical reconnecting all connections in one time (for example rebalance needed).
 Optional `threshold_start` and `threshold_end` is clusterwide options like global `threshold_start` and `threshold_end`.
 

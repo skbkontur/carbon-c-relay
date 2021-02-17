@@ -18,6 +18,8 @@
 #ifndef SERVER__INTERNAL_H
 #define SERVER_INTERNAL_H 1
 
+#include <poll.h>
+
 #ifdef HAVE_GZIP
 #include <zlib.h>
 #endif
@@ -76,7 +78,7 @@ queue *server_queue(server *s);
 int server_connect(server *self, unsigned short n);
 int server_disconnect(server *self, unsigned short n);
 z_strm *server_get_strm(server *s, unsigned short n);
-int server_poll(server *self, unsigned short n);
+int server_poll(server *s, size_t n, struct pollfd *ufd);
 void server_cleanup(server *s);
 
 #endif

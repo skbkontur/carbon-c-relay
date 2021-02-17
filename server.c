@@ -56,6 +56,8 @@ struct _servercon {
 	struct timeval last;
 	struct timeval last_wait;
 	char failure; 	    /* full byte for atomic access */
+	char hold;
+	short revents;	
 	/* metrics */
 	size_t metrics;
 	size_t ticks;
@@ -1317,34 +1319,7 @@ static inline int server_secpos_alloc(server *self)
 	return 0;
 }
 
-
-/* check for write ready - only for test
- * TODO: replace with poll on serveral servers fd in cluster threads for reduce cpu usage */
-int server_poll(server *self, unsigned short n) {
-	int ret;
-	struct pollfd ufd;
-
-	ufd.fd = self->conns[n].fd;
-	ufd.events = POLLOUT;
-	ret = poll(&ufd, 1, 10000);
-	if (ret == 0) {
-		/* timeout */
-		logerr("failed to write %s:%u (%u), server timeout\n", self->ip, self->port, n);
-		server_disconnect(self, n);
-	} else if (ret == -1) {
-		logerr("failed to write %s:%u (%u), server poll error: %s\n", self->ip, self->port, n, strerror(errno));
-		server_disconnect(self, n);
-	} else if (ufd.revents & POLLHUP) {
-		logerr("failed to write %s:%u (%u), server connection hungup\n", self->ip, self->port, n);
-		server_disconnect(self, n);
-	} else if (!(ufd.revents & POLLOUT)) {
-		logerr("failed to write %s:%u (%u), server poll revents: %d\n", self->ip, self->port, n, ufd.revents);
-		server_disconnect(self, n);
-	}
-	return ret;
-}
-
-static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char keep_running, unsigned short n)
+static ssize_t server_queueread(server *self, queue *q, char keep_running, unsigned short n, struct timeval *now)
 {
 	ssize_t slen = 0, len = 0;
 	const char *metric, *m;
@@ -1357,23 +1332,33 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 	}
 
 	gettimeofday(&start, NULL);
-	if (ufd) {
-		if (ufd->revents & POLLHUP) {
-			logerr("failed to write %s:%u (%u), server connection hungup\n",
-					self->ip, self->port, n);
-			server_disconnect(self, n);
-			return -1;
-		} else if (ufd->revents == 0) {
-			__sync_add_and_fetch(&(self->conns[n].waits), timediff(self->conns[n].last_wait, start));
-			self->conns[n].last_wait = start;
-			errno = EAGAIN;
-			return -1;
-		} else if (!(ufd->revents & POLLOUT)) {
-			logerr("failed to write %s:%u (%u), server poll revents: %d\n",
-					self->ip, self->port, n, ufd->revents);
-			server_disconnect(self, n);
-			return -1;
+	if (self->conns[n].revents & POLLHUP) {
+		logerr("failed to write %s:%u (%u), server connection hungup\n",
+				self->ip, self->port, n);
+		server_disconnect(self, n);
+		errno = ENOTCONN;
+		return -1;
+	} else if (self->conns[n].revents == 0) {
+		__sync_add_and_fetch(&(self->conns[n].waits), timediff(self->conns[n].last_wait, start));
+		if (now) {
+			ssize_t duration = timediff((*now), self->conns[n].last);
+			if (duration >= DISCONNECT_WAIT_TIME * 1000000) {
+				logout("timeout server %s:%u (%u)\n",
+							self->ip, self->port, n);
+				server_disconnect(self, n);
+				errno = ENOTCONN;
+				return -1;
+			}
 		}
+		self->conns[n].last_wait = start;
+		errno = EAGAIN;
+		return -1;
+	} else if (!(self->conns[n].revents & POLLOUT)) {
+		logerr("failed to write %s:%u (%u), server poll revents: %d\n",
+				self->ip, self->port, n, self->conns[n].revents);
+		server_disconnect(self, n);
+		errno = ENOTCONN;
+		return -1;
 	}
 	
 	if (q == NULL) {
@@ -1445,9 +1430,7 @@ static ssize_t server_queueread(server *self, queue *q, struct pollfd *ufd, char
 					server_add_failure(self, n) == 0)
 						logerr("failed to flush() to %s:%u (%u): %s\n",
 								self->ip, self->port, n,
-								(slen < 0 ?
-									self->conns[n].strm->strmerror(self->conns[n].strm, slen) :
-									"flush error"));
+									self->conns[n].strm->strmerror(self->conns[n].strm, 0));
 			server_disconnect(self, n);
 		} else {
 			if (!__sync_bool_compare_and_swap(&(self->conns[n].failure), 0, 0)) {
@@ -1492,7 +1475,7 @@ static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, 
 	return NULL;
 }
 
-static void servers_check_timeouts_and_ttl(servers *ss, struct timeval now, cluster *cl) {
+static void servers_check_ttl(servers *ss, struct timeval now, cluster *cl) {
 	servers *s;
 	int disconnect = 0;
 	if (cl->ttl > 0) {
@@ -1511,14 +1494,6 @@ static void servers_check_timeouts_and_ttl(servers *ss, struct timeval now, clus
 			if (s->server->conns[i].fd > -1) {
 				if (disconnect) {
 					server_disconnect(s->server, i);
-					server_connect(s->server, i);
-				} else {
-					ssize_t duration = timediff(now, s->server->conns[i].last);
-					if (duration >= DISCONNECT_WAIT_TIME * 1000000) {
-						logout("timeout server %s:%u (%u)\n",
-								ss->server->ip, ss->server->port, i);
-						server_disconnect(s->server, i);
-					}
 				}
 			}
 		}
@@ -1532,9 +1507,8 @@ cluster_queuereader(void *d)
 
 	ssize_t stimeout = shutdown_timeout * 1000000; /*shutdown timeout in microseconds */
 	char keep_running;
-	size_t n;
 	struct pollfd ufds[SERVER_MAX_CONNECTIONS * 50];
-	int ret = 0, iotimeout = 600; /* connection timeout */
+	int iotimeout = 600; /* connection timeout */
 	struct timeval start, now;
 
 	start.tv_sec = 0;
@@ -1545,6 +1519,7 @@ cluster_queuereader(void *d)
 		iotimeout = ss->server->iotimeout;
 
 	while (1) {
+		char poll_hold = 0;
 		servers *s;
 
         keep_running = __sync_add_and_fetch(&(self->keep_running), 0);
@@ -1572,119 +1547,157 @@ cluster_queuereader(void *d)
 			break;
 		}
 
-		n = 0;
-		for (s = ss; s != NULL; s = s->next) {
-			unsigned short k;
-			for (k = 0; k < s->server->nconns; k++) {
-				if (s->server->conns[k].fd != -1) {
-					ufds[n].fd = s->server->conns[k].fd;
-					ufds[n].events = POLLOUT;
-					n++;
-				}
-			}
+		if (self->threads == 1) {
+			poll_hold = 0;
+		} else {
+			poll_hold = __sync_val_compare_and_swap(&(self->poll_hold), 0, 1);
 		}
-		if (n > 0)
-			ret = poll(ufds, n, iotimeout);
-
-		if (ret == -1) {
-			logerr(
-				"failed to write %s, cluster servers poll error: %s\n",
-				self->name, strerror(errno));
+		
+		if (poll_hold == 0) {
+			/* poll */
+			int ret = 0, i = 0;
+			size_t n = 0;
+			servers_check_ttl(ss, now, self);
 			for (s = ss; s != NULL; s = s->next) {
 				unsigned short k;
 				for (k = 0; k < s->server->nconns; k++) {
-					if (s->server->conns[k].fd > -1) {
-						server_disconnect(s->server, k);
+					if (s->server->conns[k].fd != -1) {
+						ufds[n].fd = s->server->conns[k].fd;
+						ufds[n].events = POLLOUT;
+						n++;
 					}
 				}
 			}
-		} else if (ret >= 0) {
-			if (self->type == FAILOVER) {
-				int overload, i = 0;
-				size_t qfree = queue_free(self->queue);
-				if (keep_running == SERVER_TRY_SEND) {
-					overload = 1;
-				} else {
-					overload = QUEUE_FREE_CRITICAL(qfree, ss->server);
-				}
-				if (ss->server->qfree_threshold != ss->server->threshold_start && ! overload) {
-					/* threshold for cancel rebalance */
-					ss->server->qfree_threshold = ss->server->threshold_start;
-					if (mode & MODE_DEBUG)
-						tracef("throttle end %s:%u: waiting for %zu metrics\n",
-								ss->server->ip, ss->server->port, queue_len(self->queue));
-				} else if (ss->server->qfree_threshold == ss->server->threshold_start && overload) {
-					/* destination overloaded, set threshold for destination recovery */
-					ss->server->qfree_threshold = ss->server->threshold_end;
-					if (mode & MODE_DEBUG)
-						tracef("throttle %s:%u: waiting for %zu metrics\n",
-								ss->server->ip, ss->server->port, queue_len(self->queue));
-				}		
+			if (n > 0)
+				ret = poll(ufds, n, iotimeout);
+
+			if (ret == -1) {
+				logerr(
+					"failed to write %s, cluster servers poll error: %s\n",
+					self->name, strerror(errno));
 				for (s = ss; s != NULL; s = s->next) {
 					unsigned short k;
 					for (k = 0; k < s->server->nconns; k++) {
-						struct pollfd *p = pollfd_find(ufds, n, &i, s->server->conns[k].fd);
-						ssize_t len = server_queueread(s->server, self->queue, p, keep_running, k);
+						__sync_lock_test_and_set(&(s->server->conns[k].revents), 0);
+					}
+				}
+			} else {
+				for (s = ss; s != NULL; s = s->next) {
+					unsigned short k;
+					if (self->type == FAILOVER || self->type == ANYOF || self->isdynamic) {
+						int overload;
+						size_t qfree = queue_free(s->server->queue);
+						if (keep_running == SERVER_TRY_SEND) {
+							overload = 1;
+						} else {
+							overload = QUEUE_FREE_CRITICAL(qfree, s->server);
+						}
+						if (__sync_add_and_fetch(&(s->server->qfree_threshold), 0) != s->server->threshold_start && ! overload) {
+							/* threshold for cancel rebalance */
+							__sync_lock_test_and_set(&(s->server->qfree_threshold), s->server->threshold_start);
+							if (mode & MODE_DEBUG)
+								tracef("throttle end %s:%u: waiting for %zu metrics\n",
+										s->server->ip, s->server->port, queue_len(self->queue));
+						} else if (s->server->qfree_threshold == s->server->threshold_start && overload) {
+							/* destination overloaded, set threshold for destination recovery */
+							__sync_lock_test_and_set(&(s->server->qfree_threshold), s->server->threshold_end);
+							if (mode & MODE_DEBUG)
+								tracef("throttle %s:%u: waiting for %zu metrics\n",
+										s->server->ip, s->server->port, queue_len(self->queue));
+						}
+					}
+					for (k = 0; k < s->server->nconns; k++) {
+						if (s->server->conns[k].fd > -1) {
+							struct pollfd *p = pollfd_find(ufds, n, &i, s->server->conns[k].fd);
+							if (p) {
+								__sync_lock_test_and_set(&(s->server->conns[k].revents), p->revents);
+							} else {
+								__sync_lock_test_and_set(&(s->server->conns[k].revents), 0);
+							}
+						}
+					}
+				}
+			}
+			/* end poll */
+			if (self->threads > 1) {
+				__sync_val_compare_and_swap(&(self->poll_hold), 1, 0);
+			}
+		} else {
+			/* wait for poll end */
+			size_t us = 0;
+			while (__sync_add_and_fetch(&(self->poll_hold), 0)) {
+				usleep(us+=10);
+			}
+		}
+
+		gettimeofday(&now, NULL);
+
+		if (self->type == FAILOVER) {
+			int overload;
+			size_t qfree = queue_free(self->queue);
+			if (keep_running == SERVER_TRY_SEND) {
+				overload = 1;
+			} else {
+				overload = QUEUE_FREE_CRITICAL(qfree, ss->server);
+			}
+			for (s = ss; s != NULL; s = s->next) {
+				unsigned short k;
+				for (k = 0; k < s->server->nconns; k++) {
+					if (__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 0, 1)) {
+						ssize_t len = server_queueread(s->server, self->queue, keep_running, k, &now);
 						if (len == 0) {
+							__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
 							break;
 						} else if (len > 0) {
 							if (s != ss) {
 								__sync_add_and_fetch(&(ss->server->requeue), (size_t) len);
 							}
-							if (!overload) /* check for overload */
+							/* check for overload */
+							if (!overload) {
+								__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
 								break;
+							}
 						} if (s->server->conns[k].fd == -1) {
 							server_connect(s->server, k);
 						} else if (errno != EAGAIN && errno != EWOULDBLOCK) {
 							char failure = __sync_fetch_and_add(&(s->server->conns[k].failure), 1);
-							if (failure < FAIL_WAIT_COUNT && !overload)
+							if (failure < FAIL_WAIT_COUNT && !overload) {
+								__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
 								break;
+							}
 						}
+						__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
 					}
 				}
-			} else {
-				queue *q = NULL;				
-				server *s_min = NULL;
-				int i = 0;				
-				if (self->type == ANYOF || self->isdynamic) {
-					int overload;
-					size_t qfree_min = 0;
-					for (s = ss; s != NULL; s = s->next) {
-						size_t qfree = queue_free(s->server->queue);
-						if (q == NULL || qfree < qfree_min) {
-							s_min = s->server;
-							qfree_min = qfree;
-						}
-						overload = QUEUE_FREE_CRITICAL(qfree, s->server);
-						if (s->server->qfree_threshold != s->server->threshold_start && ! overload) {
-							/* threshold for cancel rebalance */
-							s->server->qfree_threshold = s->server->threshold_start;
-							if (mode & MODE_DEBUG)
-								tracef("throttle end %s:%u: waiting for %zu metrics\n",
-										s->server->ip, s->server->port, queue_len(s->server->queue));
-						} else if (s->server->qfree_threshold == ss->server->threshold_start && overload) {
-							/* destination overloaded, set threshold for destination recovery */
-							s->server->qfree_threshold = ss->server->threshold_end;
-							if (mode & MODE_DEBUG)
-								tracef("throttle %s:%u: waiting for %zu metrics\n",
-										s->server->ip, s->server->port, queue_len(s->server->queue));
-						}
-					}
-					overload = QUEUE_FREE_CRITICAL(qfree_min, s_min);
-					if (overload) {
-						q = s_min->queue;
-					} else {
-						s_min = NULL;
-						q = NULL;
-					}
-				}
-
+			}
+		} else {
+			queue *q = NULL;				
+			server *s_min = NULL;
+			if (self->type == ANYOF || self->isdynamic) {
+				int overload;
+				size_t qfree_min = 0;
 				for (s = ss; s != NULL; s = s->next) {
-					unsigned short k;
-					for (k = 0; k < s->server->nconns; k++) {
-						struct pollfd *p = pollfd_find(ufds, n, &i, s->server->conns[k].fd);
+					size_t qfree = queue_free(s->server->queue);
+					if (q == NULL || qfree < qfree_min) {
+						s_min = s->server;
+						qfree_min = qfree;
+					}
+				}
+				overload = QUEUE_FREE_CRITICAL(qfree_min, s_min);
+				if (overload) {
+					q = s_min->queue;
+				} else {
+					s_min = NULL;
+					q = NULL;
+				}
+			}
+
+			for (s = ss; s != NULL; s = s->next) {
+				unsigned short k;
+				for (k = 0; k < s->server->nconns; k++) {
+					if (__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 0, 1)) {
 						ssize_t len;
-						len = server_queueread(s->server, q, p, keep_running, k);
+						len = server_queueread(s->server, q, keep_running, k, &now);
 						if (len > 0 && s_min != NULL && s->server != s_min) {
 							__sync_add_and_fetch(&(s_min->requeue), (size_t) len);
 						} else if (len < 0) {
@@ -1692,19 +1705,35 @@ cluster_queuereader(void *d)
 								server_connect(s->server, k);
 							}
 						}
+						__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
 					}
 				}
 			}
 		}
-
-		gettimeofday(&now, NULL);
-		servers_check_timeouts_and_ttl(ss, now, self);
 	}
 
 	cluster_disconnect(self);
 
 	__sync_bool_compare_and_swap(&(self->running), 1, 0);
 	return NULL;
+}
+
+int server_poll(server *s, size_t n, struct pollfd *ufd) {
+	int ret;
+	ufd->fd = s->conns[n].fd;
+	ufd->events = POLLOUT;
+	ret = poll(ufd, 1, s->iotimeout);
+
+	if (ret == -1) {
+		logerr(
+			"failed to write %s:%u, server poll error: %s\n",
+			s->ip, s->port, strerror(errno));
+		__sync_lock_test_and_set(&(s->conns[0].revents), 0);
+	} else {
+		__sync_lock_test_and_set(&(s->conns[0].revents), ufd->revents);
+	}
+
+	return ret;
 }
 
 /**
@@ -1752,7 +1781,9 @@ server_queuereader(void *d)
 		if (self->conns[0].fd == -1) {
 			server_connect(self, 0);
 		} else {
-			len = server_queueread(self, self->queue, NULL, keep_running, 0);
+			struct pollfd ufd;
+			server_poll(self, 0, &ufd);
+			server_queueread(self, self->queue, keep_running, 0, NULL);
 		}
 	}
 
@@ -1876,6 +1907,8 @@ server_new(
 		ret->conns[i].fd = -1;
 		ret->conns[i].strm = NULL;
 		ret->conns[i].len = 0;
+		ret->conns[i].revents = 0;
+		ret->conns[i].hold = 0;
 		ret->conns[i].batch = NULL;
 		ret->conns[i].last.tv_sec = 0;
 		ret->conns[i].last.tv_usec = 0;
@@ -2032,6 +2065,7 @@ servers *cluster_servers(cluster *c)
 char cluster_start(cluster *c)
 {
 	int err = 0;
+	size_t i;
 	servers *s = cluster_servers(c);
 
 	if (s == NULL) {
@@ -2048,20 +2082,19 @@ char cluster_start(cluster *c)
 		}
 	}
 
-	// for (s = cluster_servers(c); s != NULL; s = s->next) {
-	// 	if ((err = server_start(s->server)) != 0) {
-	// 		logerr("failed to start server %s:%u: %s\n",
-	// 				server_ip(s->server),
-	// 				server_port(s->server),
-	// 				strerror(err));
-	// 		err = 1;
-	// 		break;
-	// 	}
-	// }
-	// 
-	// return err;
-
-	return pthread_create(&c->tid, NULL, &cluster_queuereader, c);
+	if (c->threads == 0) {
+		c->threads = 1;
+	}
+	err = 1;
+	for (i = 0; i < c->threads; i++) {
+		int ret = pthread_create(&c->tids[i], NULL, &cluster_queuereader, c);
+		if (ret == 0) {
+			err = 0;
+		} else {
+			logerr("failed to start cluster thread: %s\n", strerror(ret));
+		}
+	}
+	return err;
 }
 
 /**
@@ -2197,16 +2230,19 @@ void cluster_shutdown(cluster *c, int swap)
 void cluster_shutdown_wait(cluster *c)
 {
 	int err;
+	size_t i;
 	servers *s = cluster_servers(c);
 
 	for ( ; s != NULL; s = s->next) {
 		server_shutdown_wait(s->server);
 	}
 
-	if (c->tid != 0 && (err = pthread_join(c->tid, NULL)) != 0)
-		logerr("%s: failed to join cluster thread: %s\n",
-				c->name, strerror(err));
-	c->tid = 0;
+	for (i = 0; i < c->threads; i++) {
+		if (c->tids[i] != 0 && (err = pthread_join(c->tids[i], NULL)) != 0)
+			logerr("%s: failed to join cluster thread %zu: %s\n",
+					i, c->name, strerror(err));
+		c->tids[i] = 0;
+	}
 }
 
 /**

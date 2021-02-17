@@ -119,6 +119,7 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
     const char *err;
     int state = DSTATUS_UP;
     int ret = server_connect(s, 0);
+    struct pollfd ufd;
     // connection must failed, mock is down state
     ASSERT_EQUAL_D(-1, ret, "connection must failed");
 
@@ -131,7 +132,9 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
             break;
         }
     }
-    server_poll(s, 0);
+
+    server_poll(s, 0, &ufd);
+
     strm = server_get_strm(s, 0);
 
     // connection must successed
@@ -157,7 +160,7 @@ void connect_and_send(server *s, listener_mock *d, int repeat_delay) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         state = DSTATUS_UP;
                         ASSERT_EQUAL(0, listener_mock_set_state(d, state));
-                        ASSERT_EQUAL_D(1, server_poll(s, 0), "poll");
+                        ASSERT_EQUAL_D(1, server_poll(s, 0, &ufd), "poll");
                     } else {
                         ASSERT_FORMAT("%s\n", strerror(errno));
                     }

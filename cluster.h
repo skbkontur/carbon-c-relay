@@ -22,6 +22,8 @@
 
 #include "consistent-hash.h"
 
+#define CLUSTER_MAX_THREADS 16
+
 enum clusttype {
 	BLACKHOLE,  /* /dev/null-like destination */
 	GROUP,      /* pseudo type to create a matching tree */
@@ -66,9 +68,11 @@ typedef struct _cluster {
 	int server_connections;
 	int threshold_start;
 	int threshold_end;
-	pthread_t tid;
+	size_t threads;
+	pthread_t tids[CLUSTER_MAX_THREADS];
 	size_t ttl; /* ttl seconds */
 	size_t connect_ts; /* connect timestamp (seconds) for ttl */
+	char poll_hold;          /* full byte for atomic access */
 	char isdynamic:1;
 	queue *queue;
 	union {
@@ -114,7 +118,7 @@ typedef struct _route {
 } route;
 
 size_t cluster_ttl(int ttl_minutes);
-cluster *cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize, size_t ttl_minutes);
+cluster *cluster_new(char *name, allocator *a, enum clusttype ctype, route *m, size_t queuesize, size_t ttl_minutes, int threads);
 int cluster_set_threshold(cluster *cl, int threshold_start, int threshold_end);
 void cluster_free(cluster *cl);
 char cluster_start(cluster *c);

@@ -69,6 +69,13 @@ struct _clhost {
 	void *hint;
 	struct _clhost *next;
 };
+struct _cluster_options {
+	int server_connections;
+	int ttl;
+	int threads;
+	int threshold_start;
+	int threshold_end;
+};
 struct _maexpr {
 	route *r;
 	char drop;
@@ -97,7 +104,7 @@ struct _rcptr_trsp {
 	char *pemcert;
 };
 
-#line 101 "conffile.tab.h"
+#line 108 "conffile.tab.h"
 
 /* Token type.  */
 #ifndef ROUTER_YYTOKENTYPE
@@ -119,69 +126,70 @@ struct _rcptr_trsp {
     crUSEALL = 270,
     crUDP = 271,
     crTCP = 272,
-    crCONNECTIONS = 273,
-    crTHRESHOLD_START = 274,
-    crTHRESHOLD_END = 275,
-    crTTL = 276,
-    crMATCH = 277,
-    crVALIDATE = 278,
-    crELSE = 279,
-    crLOG = 280,
-    crDROP = 281,
-    crROUTE = 282,
-    crUSING = 283,
-    crSEND = 284,
-    crTO = 285,
-    crBLACKHOLE = 286,
-    crSTOP = 287,
-    crREWRITE = 288,
-    crINTO = 289,
-    crAGGREGATE = 290,
-    crEVERY = 291,
-    crSECONDS = 292,
-    crEXPIRE = 293,
-    crAFTER = 294,
-    crTIMESTAMP = 295,
-    crAT = 296,
-    crSTART = 297,
-    crMIDDLE = 298,
-    crEND = 299,
-    crOF = 300,
-    crBUCKET = 301,
-    crCOMPUTE = 302,
-    crSUM = 303,
-    crCOUNT = 304,
-    crMAX = 305,
-    crMIN = 306,
-    crAVERAGE = 307,
-    crMEDIAN = 308,
-    crVARIANCE = 309,
-    crSTDDEV = 310,
-    crPERCENTILE = 311,
-    crWRITE = 312,
-    crSTATISTICS = 313,
-    crSUBMIT = 314,
-    crRESET = 315,
-    crCOUNTERS = 316,
-    crINTERVAL = 317,
-    crPREFIX = 318,
-    crWITH = 319,
-    crLISTEN = 320,
-    crTYPE = 321,
-    crLINEMODE = 322,
-    crSYSLOGMODE = 323,
-    crTRANSPORT = 324,
-    crPLAIN = 325,
-    crGZIP = 326,
-    crLZ4 = 327,
-    crSNAPPY = 328,
-    crSSL = 329,
-    crUNIX = 330,
-    crINCLUDE = 331,
-    crCOMMENT = 332,
-    crSTRING = 333,
-    crUNEXPECTED = 334,
-    crINTVAL = 335
+    crTTL = 273,
+    crTHREADS = 274,
+    crCONNECTIONS = 275,
+    crTHRESHOLD_START = 276,
+    crTHRESHOLD_END = 277,
+    crMATCH = 278,
+    crVALIDATE = 279,
+    crELSE = 280,
+    crLOG = 281,
+    crDROP = 282,
+    crROUTE = 283,
+    crUSING = 284,
+    crSEND = 285,
+    crTO = 286,
+    crBLACKHOLE = 287,
+    crSTOP = 288,
+    crREWRITE = 289,
+    crINTO = 290,
+    crAGGREGATE = 291,
+    crEVERY = 292,
+    crSECONDS = 293,
+    crEXPIRE = 294,
+    crAFTER = 295,
+    crTIMESTAMP = 296,
+    crAT = 297,
+    crSTART = 298,
+    crMIDDLE = 299,
+    crEND = 300,
+    crOF = 301,
+    crBUCKET = 302,
+    crCOMPUTE = 303,
+    crSUM = 304,
+    crCOUNT = 305,
+    crMAX = 306,
+    crMIN = 307,
+    crAVERAGE = 308,
+    crMEDIAN = 309,
+    crVARIANCE = 310,
+    crSTDDEV = 311,
+    crPERCENTILE = 312,
+    crWRITE = 313,
+    crSTATISTICS = 314,
+    crSUBMIT = 315,
+    crRESET = 316,
+    crCOUNTERS = 317,
+    crINTERVAL = 318,
+    crPREFIX = 319,
+    crWITH = 320,
+    crLISTEN = 321,
+    crTYPE = 322,
+    crLINEMODE = 323,
+    crSYSLOGMODE = 324,
+    crTRANSPORT = 325,
+    crPLAIN = 326,
+    crGZIP = 327,
+    crLZ4 = 328,
+    crSNAPPY = 329,
+    crSSL = 330,
+    crUNIX = 331,
+    crINCLUDE = 332,
+    crCOMMENT = 333,
+    crSTRING = 334,
+    crUNEXPECTED = 335,
+    crINTVAL = 336
   };
 #endif
 
@@ -250,14 +258,16 @@ union ROUTER_YYSTYPE
   int cluster_opt_repl;
   /* cluster_opt_dynamic  */
   int cluster_opt_dynamic;
-  /* server_connections  */
-  int server_connections;
+  /* connections  */
+  int connections;
   /* threshold_start  */
   int threshold_start;
   /* threshold_end  */
   int threshold_end;
   /* ttl  */
   int ttl;
+  /* threads  */
+  int threads;
   /* match_log_or_drop  */
   int match_log_or_drop;
   /* match_opt_stop  */
@@ -312,7 +322,7 @@ union ROUTER_YYSTYPE
   struct _rcptr_trsp * transport_mode_trans;
   /* transport_mode  */
   struct _rcptr_trsp * transport_mode;
-#line 316 "conffile.tab.h"
+#line 326 "conffile.tab.h"
 
 };
 typedef union ROUTER_YYSTYPE ROUTER_YYSTYPE;
