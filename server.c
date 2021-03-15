@@ -887,6 +887,10 @@ static inline char server_add_failure(server *s, unsigned short n) {
 	return failure;
 }
 
+static inline void server_reset_failure(server *s, unsigned short n) {
+	__sync_and_and_fetch(&(s->conns[n].failure), 0);
+}
+
 /**
  * Returns unsended metrics back to the queue.
  */
@@ -894,7 +898,7 @@ static void
 server_back_unsended(server *self, queue *q, unsigned short n)
 {
 	if (self->conns[n].len > 0) {
-		size_t i;
+		ssize_t i;
 		for (i = self->conns[n].len - 1; i >= 0; i--) {
 			const char *metric = self->conns[n].batch[i];
 			char ret = queue_putback(q, metric);
@@ -1092,7 +1096,7 @@ int server_connect(server *self, unsigned short n)
 		if (getaddrinfo(self->ip, sport, self->hint, &saddr) == 0) {
 			self->saddr = saddr;
 		} else {
-			if (__sync_fetch_and_add(&(self->conns[n].failure), 1) == 0)
+			if (server_add_failure(self, n) == 0)
 				logerr("failed to resolve %s:%u, server unavailable\n",
 						self->ip, self->port);
 			self->saddr = NULL;
@@ -1336,28 +1340,32 @@ static ssize_t server_queueread(server *self, queue *q, char keep_running, unsig
 		logerr("failed to write %s:%u (%u), server connection hungup\n",
 				self->ip, self->port, n);
 		server_disconnect(self, n);
+		server_add_failure(self, n);
 		errno = ENOTCONN;
-		return -1;
-	} else if (self->conns[n].revents == 0) {
-		__sync_add_and_fetch(&(self->conns[n].waits), timediff(self->conns[n].last_wait, start));
-		if (now) {
-			ssize_t duration = timediff((*now), self->conns[n].last);
-			if (duration >= DISCONNECT_WAIT_TIME * 1000000) {
-				logout("timeout server %s:%u (%u)\n",
-							self->ip, self->port, n);
-				server_disconnect(self, n);
-				errno = ENOTCONN;
-				return -1;
-			}
-		}
-		self->conns[n].last_wait = start;
-		errno = EAGAIN;
 		return -1;
 	} else if (!(self->conns[n].revents & POLLOUT)) {
-		logerr("failed to write %s:%u (%u), server poll revents: %d\n",
-				self->ip, self->port, n, self->conns[n].revents);
-		server_disconnect(self, n);
-		errno = ENOTCONN;
+		if (self->conns[n].revents == 0) {
+			__sync_add_and_fetch(&(self->conns[n].waits), timediff(self->conns[n].last_wait, start));
+			if (now) {
+				ssize_t duration = timediff((*now), self->conns[n].last);
+				if (duration >= DISCONNECT_WAIT_TIME * 1000000) {
+					logout("timeout server %s:%u (%u)\n",
+								self->ip, self->port, n);
+					server_disconnect(self, n);
+					server_add_failure(self, n);
+					errno = ENOTCONN;
+				}
+			} else {
+				self->conns[n].last_wait = start;
+				errno = EAGAIN;
+			}
+		} else {
+			logerr("failed to write %s:%u (%u), server poll revents: %d\n",
+					self->ip, self->port, n, self->conns[n].revents);
+			server_disconnect(self, n);
+			server_add_failure(self, n);
+			errno = ENOTCONN;
+		}
 		return -1;
 	}
 	
@@ -1432,11 +1440,12 @@ static ssize_t server_queueread(server *self, queue *q, char keep_running, unsig
 								self->ip, self->port, n,
 									self->conns[n].strm->strmerror(self->conns[n].strm, 0));
 			server_disconnect(self, n);
+			server_add_failure(self, n);
 		} else {
 			if (!__sync_bool_compare_and_swap(&(self->conns[n].failure), 0, 0)) {
 				if (self->ctype != CON_UDP)
 					logerr("server %s:%u (%u): OK\n", self->ip, self->port, n);
-				__sync_and_and_fetch(&(self->conns[n].failure), 0);
+				server_reset_failure(self, n);
 			}
 			__sync_add_and_fetch(&(self->conns[n].metrics), self->conns[n].len);
 			len = self->conns[n].len;
@@ -1462,14 +1471,17 @@ static struct pollfd *pollfd_find(struct pollfd *ufds, int count, int *cur_pos, 
 	if (fd == -1) {
 		return NULL;
 	}
-	while (*cur_pos < count) {
-		if (fd == ufds[*cur_pos].fd) {
-			return &ufds[*cur_pos];
+	int pos = *cur_pos;
+	while (pos < count) {
+		if (fd == ufds[pos].fd) {
+			if (pos == count - 1) {
+				*cur_pos = 0;
+			} else {
+				*cur_pos = pos +1;
+			}
+			return &ufds[pos];
 		}
-#pragma GCC diagnostic push		
-#pragma GCC diagnostic ignored "-Wunused-value"
-		*cur_pos++;
-#pragma GCC diagnostic pop
+		pos++;
 	}
 	*cur_pos = 0;
 	return NULL;
@@ -1562,9 +1574,11 @@ cluster_queuereader(void *d)
 				unsigned short k;
 				for (k = 0; k < s->server->nconns; k++) {
 					if (s->server->conns[k].fd != -1) {
-						ufds[n].fd = s->server->conns[k].fd;
-						ufds[n].events = POLLOUT;
-						n++;
+						if (__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 0, -1)) {
+							ufds[n].fd = s->server->conns[k].fd;
+							ufds[n].events = POLLOUT;
+							n++;
+						}
 					}
 				}
 			}
@@ -1578,7 +1592,7 @@ cluster_queuereader(void *d)
 				for (s = ss; s != NULL; s = s->next) {
 					unsigned short k;
 					for (k = 0; k < s->server->nconns; k++) {
-						__sync_lock_test_and_set(&(s->server->conns[k].revents), 0);
+						__sync_bool_compare_and_swap(&(s->server->conns[k].hold), -1, 0);
 					}
 				}
 			} else {
@@ -1615,6 +1629,7 @@ cluster_queuereader(void *d)
 								__sync_lock_test_and_set(&(s->server->conns[k].revents), 0);
 							}
 						}
+						__sync_bool_compare_and_swap(&(s->server->conns[k].hold), -1, 0);
 					}
 				}
 			}
@@ -1642,6 +1657,7 @@ cluster_queuereader(void *d)
 			}
 			for (s = ss; s != NULL; s = s->next) {
 				unsigned short k;
+				char failure = 0;
 				for (k = 0; k < s->server->nconns; k++) {
 					if (__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 0, 1)) {
 						ssize_t len = server_queueread(s->server, self->queue, keep_running, k, &now);
@@ -1652,22 +1668,19 @@ cluster_queuereader(void *d)
 							if (s != ss) {
 								__sync_add_and_fetch(&(ss->server->requeue), (size_t) len);
 							}
-							/* check for overload */
-							if (!overload) {
-								__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
-								break;
-							}
-						} if (s->server->conns[k].fd == -1) {
+						} else if (s->server->conns[k].fd == -1) {
 							server_connect(s->server, k);
-						} else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-							char failure = __sync_fetch_and_add(&(s->server->conns[k].failure), 1);
-							if (failure < FAIL_WAIT_COUNT && !overload) {
-								__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
-								break;
-							}
+						}
+						if (__sync_fetch_and_add(&(s->server->conns[k].hold), 0) >= FAIL_WAIT_COUNT) {
+							failure = 1;
 						}
 						__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 1, 0);
 					}
+				}
+
+				/* check for overload */
+				if (overload == 0 && failure == 0) {
+					break;
 				}
 			}
 		} else {
@@ -1696,8 +1709,8 @@ cluster_queuereader(void *d)
 				unsigned short k;
 				for (k = 0; k < s->server->nconns; k++) {
 					if (__sync_bool_compare_and_swap(&(s->server->conns[k].hold), 0, 1)) {
-						ssize_t len;
-						len = server_queueread(s->server, q, keep_running, k, &now);
+						ssize_t len = server_queueread(s->server, q, keep_running, k, &now);
+						//logout("send %s:%d (%zd)\n", s->server->ip, s->server->port, len);
 						if (len > 0 && s_min != NULL && s->server != s_min) {
 							__sync_add_and_fetch(&(s_min->requeue), (size_t) len);
 						} else if (len < 0) {
@@ -1782,7 +1795,7 @@ server_queuereader(void *d)
 			server_connect(self, 0);
 		} else {
 			struct pollfd ufd;
-			server_poll(self, 0, &ufd);
+   			server_poll(self, 0, &ufd);
 			server_queueread(self, self->queue, keep_running, 0, NULL);
 		}
 	}
