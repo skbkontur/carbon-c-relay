@@ -24,9 +24,20 @@ CNFCLN=( sed -e '/^configuration:/,/^parsed configuration follows:/d'
              -e 's/^\[[0-9][0-9\-]* [0-9][0-9:]*\] //'
              -e 's/_stub_[0-9a-fx][0-9a-fx]*__/_stub_0xc0d3__/')
 
-export DYLD_FORCE_FLAT_NAMESPACE=1
-export DYLD_INSERT_LIBRARIES=../.libs/libfaketime.dylib
-export LD_PRELOAD=../.libs/libfaketime.so
+[ "`uname`" = "Linux" ] && {
+	# Detect libasan for preload library
+	LIBASAN=$( ldd ${EXEC} | grep libasan | awk '{ print $3 }' )
+	if [ "${LIBASAN}" != "" ]; then
+		export LD_PRELOAD="${LIBASAN}"
+		VALGRIND="0"
+	fi
+}
+
+VALGRIND_EXEC="valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=128"
+
+[ "${VALGRIND}" = "1" ] && {
+	EXEC="${VALGRIND_EXEC} ${EXEC}"
+}
 
 buftest_generate() {
 i=1
@@ -108,12 +119,19 @@ run_configtest() {
 
 	[[ -e ${conf} ]] || conf="../issues/${conf}"
 	echo -n "${test}: "
+	[ "${VALGRIND}" = "1" ] && {
+	tdiff=$(cat ${2} \
+		| ( ${EXEC} ${eflags} -f "${conf}" ; trigger_bash_segv_print=$?) 2>&1 \
+		| "${CNFCLN[@]}" \
+		; exit ${PIPESTATUS[1]})
+	} || {
 	tdiff=$(cat ${2} \
 		| ( ${EXEC} ${eflags} -f "${conf}" ; trigger_bash_segv_print=$?) 2>&1 \
 		| "${CNFCLN[@]}" \
 		| ${DIFF} "${test}.out" - --label "${test}.out" --label "${test}.out" \
 		| ${POST} \
 		; exit ${PIPESTATUS[3]})
+	}
 	if [[ $? == 0 ]] ; then
 		echo "PASS"
 		return 0
@@ -290,28 +308,18 @@ run_servertest() {
 	sleep 3
 
 	# kill and wait for relay to come down
-	local pid=$(< "${pidfile}")
-	if [ ${mode} == DUAL ]; then
-		pid2="$(< "${pidfile2}")"
-		kill ${pid2}
-		local i=5
-		while [[ ${i} -gt 0 ]] ; do
-			ps -p ${pid2} >& /dev/null || break
-			echo -n "."
-			sleep 1
-			: $((i--))
-		done
-	fi
-	kill ${pid}
-	local i=5
+	local pids=$(< "${pidfile}")
+	[[ ${mode} == DUAL ]] && pids+=" $(< "${pidfile2}")"
+	kill ${pids}
+	local i=10
 	while [[ ${i} -gt 0 ]] ; do
-		ps -p ${pid} >& /dev/null || break
+		ps -p ${pids} >& /dev/null || break
 		echo -n "."
 		sleep 1
 		: $((i--))
 	done
 	# if it didn't yet die, make it so
-	ps -p ${pid} ${pid2} >& /dev/null && kill -KILL ${pids}
+	[[ ${i} == 0 ]] && kill -KILL ${pids}
 
 	# add errors to the mix
 	sed -n 's/^.*(ERR)/relay 1:/p' ${output} >> "${dataout}"
@@ -345,7 +353,6 @@ run_servertest() {
 	fi
 
 	# cleanup
-	#echo "${tmpdir}"
 	rm -Rf "${tmpdir}"
 
 	return ${ret}
@@ -369,10 +376,15 @@ run_reloadtest() {
 	local payloadexpect="${payload}out"
 	local test=${confarg%.*}
 	local confarg2=${test}-2.${confarg##*.}
+	local confarg3=${test}-3.${confarg##*.}
 
 	echo -n "${test}: "
 	[[ -e ${confarg2} ]] || {
 		echo "${confarg2} not exist" >&2
+		return 1
+	}
+	[[ -e ${confarg3} ]] || {
+		echo "${confarg3} not exist" >&2
 		return 1
 	}
 
@@ -467,7 +479,7 @@ run_reloadtest() {
 	#fi
 
 	reload_ret=0
-	for conf_arg in ${confarg2} ${confarg} ${confarg2} ; do
+	for conf_arg in ${confarg2} ${confarg3} ${confarg} ${confarg3} ${confarg2} ; do
 		echo -n "${conf_arg} "
 		write_config ${conf_arg} ${conf} ${port} ${unixsock} || return 1
 		> "${output}"
@@ -482,6 +494,7 @@ run_reloadtest() {
 				break
 			}
 		done
+		sleep 1 # TODO: refactor server code (can lost last messaged during reload) and remove timeout
 		[ "${reload_ret}" == "1" ] && echo FAIL
 
 		[ "${reload_ret}" == "0" ] && {
@@ -531,7 +544,6 @@ run_reloadtest() {
 		fi
 	elif [ "${ret}" != "0" ]; then
 		[ "${reload_ret}" == "0" ] && echo FAIL
-		echo "relay exit with SIG$(kill -l $(($ret-128))) signal"
 	else
 		ret=1
 	fi
@@ -568,8 +580,14 @@ ufail=0
 echo "Unit tests"
 for test in ../test_* ; do
 	[ -x "${test}" ] || continue
-	echo -n "# $( basename ${test} )"
-	${test} || ufail=1
+	echo "# $( basename ${test} )"
+	[ "${VALGRIND}" = "1" ] && {
+		${VALGRIND_EXEC} ${test} || ufail=1
+	} || {
+		${test} || {
+			ufail=1
+		}
+	}
 done
 [ "${ufail}" == "1" ] && exit 1
 
@@ -581,10 +599,14 @@ large_ssl_generate
 large_compress_generate
 dual_large_compress_generate
 
-${EXEC} -v | grep -w gzip >/dev/null && HAVE_GZIP=1 || HAVE_GZIP=0
-${EXEC} -v | grep -w lz4 >/dev/null && HAVE_LZ4=1 || HAVE_LZ4=0
-${EXEC} -v | grep -w snappy >/dev/null && HAVE_SNAPPY=1 || HAVE_SNAPPY=0
-${EXEC} -v | grep -w ssl >/dev/null && HAVE_SSL=1 || HAVE_SSL=0
+export DYLD_FORCE_FLAT_NAMESPACE=1
+export DYLD_INSERT_LIBRARIES=../.libs/libfaketime.dylib
+export LD_PRELOAD="${LD_PRELOAD} ../.libs/libfaketime.so"
+
+${EXEC} -v 2>/dev/null | grep -w gzip >/dev/null && HAVE_GZIP=1 || HAVE_GZIP=0
+${EXEC} -v 2>/dev/null | grep -w lz4 >/dev/null && HAVE_LZ4=1 || HAVE_LZ4=0
+${EXEC} -v 2>/dev/null | grep -w snappy >/dev/null && HAVE_SNAPPY=1 || HAVE_SNAPPY=0
+${EXEC} -v 2>/dev/null | grep -w ssl >/dev/null && HAVE_SSL=1 || HAVE_SSL=0
 echo " done"
 
 tstcnt=0
