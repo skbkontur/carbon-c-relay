@@ -35,6 +35,7 @@
 #endif
 
 #include <event2/thread.h>
+#include <event2/event.h>
 
 #include "relay.h"
 #include "server.h"
@@ -916,8 +917,12 @@ main(int argc, char * const argv[])
 	router_optimise(rtr, optimiserthreshold);
 
 	/* we're done if all we wanted was to test the config */
-	if (mode & MODE_CONFIGTEST)
+	if (mode & MODE_CONFIGTEST) {
+#ifdef HAVE_LIBEVENT_SHUTDOWN
+		libevent_global_shutdown();
+#endif	
 		exit(0);
+	}
 
 	aggrs = router_getaggregators(rtr);
 	numaggregators = aggregator_numaggregators(aggrs);
@@ -1083,6 +1088,13 @@ main(int argc, char * const argv[])
 	router_shutdown(rtr);
 	router_free(rtr);
 	logout("stopped servers\n");
+
+#ifdef HAVE_LIBEVENT_SHUTDOWN
+	/* for prevent sanitizers leak detect */
+	libevent_global_shutdown();
+#endif
+
+	router_quoteident_buf_free();
 
 	if (pidfile != NULL)
 		unlink(pidfile);

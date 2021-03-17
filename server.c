@@ -1661,11 +1661,11 @@ server_free(server *s) {
 	if (s->saddr != NULL)
 		freeaddrinfo(s->saddr);
 	if (s->hint)
-		free(s->hint);
-	free((char *)s->ip);
+		freeaddrinfo(s->hint);
 	if (s->strm->nextstrm != NULL)
 		free(s->strm->nextstrm);
 	free(s->strm);
+	free((char *)s->ip);	
 	s->ip = NULL;
 	free(s->secpos);
 	free(s);

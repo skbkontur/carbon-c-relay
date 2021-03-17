@@ -36,6 +36,15 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
+/* Define to 1 if you have the `event' library (-levent). */
+#undef HAVE_LIBEVENT
+
+/* Define to 1 if you have the `event_pthreads' library (-levent_pthreads). */
+#undef HAVE_LIBEVENT_PTHREADS
+
+/* Define if you have libevent_global_shutdown */
+#undef HAVE_LIBEVENT_SHUTDOWN
+
 /* Define to 1 if you have the `localtime_r' function. */
 #undef HAVE_LOCALTIME_R
 
@@ -212,7 +221,8 @@
 /* Define to 1 if you have the <zlib.h> header file. */
 #undef HAVE_ZLIB_H
 
-/* Define to the sub-directory where libtool stores uninstalled libraries. */
+/* Define to the sub-directory in which libtool stores uninstalled libraries.
+   */
 #undef LT_OBJDIR
 
 /* Name of package */

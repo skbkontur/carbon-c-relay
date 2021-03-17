@@ -1854,6 +1854,12 @@ router_set_collectorvals(router *rtr, int intv, char *prefix, col_mode smode)
 }
 
 static char *_router_quoteident_buf = NULL;
+
+void router_quoteident_buf_free()
+{
+	free(_router_quoteident_buf);
+}
+
 static size_t _router_quoteident_buflen = 0;
 static const char *router_quoteident(const char *ident)
 {
