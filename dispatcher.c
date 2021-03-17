@@ -122,7 +122,6 @@ struct _dispatcher {
 	struct event_base *evbase;
 	struct event *notify_ev;
 	int notify_fd[2];
-	queue *notify_queue;
 	pthread_t tid;
 	enum conntype type;
 	char id;
@@ -1577,19 +1576,13 @@ dispatch_new(
 
 	if (ret == NULL)
 		return NULL;
-	if ((ret->notify_queue = queue_new(CMD_QUEUE_SIZE)) == NULL) {
-		free(ret);
-		return NULL;
-	}
 
 	if ((ret->evbase = event_base_new()) == NULL) {
-		queue_free(ret->notify_queue);
 		free(ret);
 		return NULL;
 	}
 
 	if (socketpair(AF_LOCAL, SOCK_STREAM, 0, ret->notify_fd) == -1) {
-		queue_free(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
@@ -1600,7 +1593,6 @@ dispatch_new(
 	if (ret->notify_ev == NULL) {
 		close(ret->notify_fd[0]);
 		close(ret->notify_fd[1]);
-		queue_free(ret->notify_queue);
 		event_base_free(ret->evbase);
 		free(ret);
 		return NULL;
@@ -1776,7 +1768,6 @@ dispatch_wait_shutdown_byid(unsigned char id)
 void
 dispatch_free(dispatcher *d)
 {
-	queue_destroy(d->notify_queue);
 	event_free(d->notify_ev);
 	event_base_free(d->evbase);
 	free(d);
