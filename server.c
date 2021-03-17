@@ -574,6 +574,17 @@ size_t server_metrics_in_buffer(server *s) {
 	return count;
 }
 
+static int
+server_disconnect(server *self) {
+	if (self->fd != -1) {
+		int ret = self->strm->strmclose(self->strm);
+		self->fd = -1;
+		return ret;
+	} else {
+		return 0;
+	}
+}
+
 char server_connect(server *self)
 {
 	struct timeval timeout;
@@ -955,8 +966,7 @@ static ssize_t server_queuesend(server *self, queue *squeue, server *source)
 							(slen < 0 ?
 							 self->strm->strmerror(self->strm, slen) :
 							 "incomplete write"));
-				self->strm->strmclose(self->strm);
-				self->fd = -1;
+				server_disconnect(self);
 				break;
 			}
 			__sync_add_and_fetch(&(self->metrics), 1);
@@ -970,8 +980,7 @@ static ssize_t server_queuesend(server *self, queue *squeue, server *source)
 						(slen < 0 ?
 						 self->strm->strmerror(self->strm, slen) :
 						 "incomplete write"));
-			self->strm->strmclose(self->strm);
-			self->fd = -1;
+			server_disconnect(self);
 		}
 		if (self->fd >= 0) {
 			if ( __sync_and_and_fetch(&(self->failure), 0) > 0) {
@@ -1039,8 +1048,7 @@ static ssize_t server_queueread(server *self, int shutdown, char *idle)
 		if (self->ctype == CON_TCP && self->fd >= 0 &&
 				*idle++ > DISCONNECT_WAIT_TIME)
 		{
-			self->strm->strmclose(self->strm);
-			self->fd = -1;
+			server_disconnect(self);
 		}
 		if (*idle == 1)
 			/* ensure blocks are pushed out as soon as we're idling,
@@ -1165,8 +1173,7 @@ static int server_poll(server *self, int timeout_ms)
 				__sync_and_and_fetch(&(self->failure), 1);
 			}
 		}
-		self->strm->strmclose(self->strm);
-		self->fd = -1;
+		server_disconnect(self);
 		return 0;
 	}
 	return 0;
@@ -1251,7 +1258,7 @@ server_queuereader(void *d)
 	logout("shut down %s:%d\n", self->ip, self->port);
 	if (self->fd >= 0) {
 		self->strm->strmflush(self->strm);
-		self->strm->strmclose(self->strm);
+		server_disconnect(self);
 	}
 
 	__sync_bool_compare_and_swap(&(self->running), 1, 0);
