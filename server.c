@@ -1161,7 +1161,11 @@ static ssize_t server_queueread(server *self, int shutdown, char *idle, unsigned
 						break;
 					}
 					else if (server_failed(self->secondaries[i]) < FAIL_WAIT_COUNT) {
-						server_disconnect(self, n);
+						if (self->ctype == CON_TCP && self->conns[n].fd >= 0 &&
+								*idle++ > DISCONNECT_WAIT_TIME)
+						{
+							server_disconnect(self, n);
+						}
 						return 0;
 					}
 				}
