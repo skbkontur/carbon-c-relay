@@ -305,11 +305,18 @@ run_servertest() {
 		return 1
 	fi
 	# allow everything to be processed
-	sleep 3
+	sleep 1
+
+	if echo ${test} | grep large >/dev/null; then
+		sleep 1
+	fi
 
 	# kill and wait for relay to come down
 	local pids=$(< "${pidfile}")
-	[[ ${mode} == DUAL ]] && pids+=" $(< "${pidfile2}")"
+	if [[ ${mode} == DUAL ]]; then
+		sleep 1
+		pids+=" $(< "${pidfile2}")"
+	fi
 	kill ${pids}
 	local i=10
 	while [[ ${i} -gt 0 ]] ; do

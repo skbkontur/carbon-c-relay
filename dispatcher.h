@@ -22,11 +22,10 @@
 
 #include "router.h"
 
-int rand2();
 typedef struct _dispatcher dispatcher;
 typedef struct _connection connection;
 
-char dispatch_global_alloc(void);
+int rand2();
 void dispatch_check_rlimit_and_warn(void);
 char dispatch_workers_alloc(char count);
 dispatcher **dispatch_workers(void);

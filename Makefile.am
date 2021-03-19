@@ -54,6 +54,7 @@ SOURCES = \
 	server.c \
 	collector.c \
 	aggregator.c \
+	eventpipe.c \
 	$(NULL)
 RELAY_LIBS = $(LIBGZIP) $(LIBLZ4) $(LIBSNAPPY) $(LIBSSL) \
 			$(LIBONIGURUMA) $(LIBPCRE2) $(LIBPCRE) -levent -levent_pthreads

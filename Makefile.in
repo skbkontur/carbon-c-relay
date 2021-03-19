@@ -158,7 +158,7 @@ am__objects_1 = md5.$(OBJEXT) consistent-hash.$(OBJEXT) \
 	receptor.$(OBJEXT) dispatcher.$(OBJEXT) conffile.tab.$(OBJEXT) \
 	conffile.yy.$(OBJEXT) allocator.$(OBJEXT) router.$(OBJEXT) \
 	queue.$(OBJEXT) server.$(OBJEXT) collector.$(OBJEXT) \
-	aggregator.$(OBJEXT)
+	aggregator.$(OBJEXT) eventpipe.$(OBJEXT)
 am_relay_OBJECTS = relay.$(OBJEXT) $(am__objects_1)
 relay_OBJECTS = $(am_relay_OBJECTS)
 am__DEPENDENCIES_1 =
@@ -404,6 +404,7 @@ SOURCES = \
 	server.c \
 	collector.c \
 	aggregator.c \
+	eventpipe.c \
 	$(NULL)
 
 RELAY_LIBS = $(LIBGZIP) $(LIBLZ4) $(LIBSNAPPY) $(LIBSSL) \
@@ -647,6 +648,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/conffile.yy.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/consistent-hash.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/dispatcher.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/eventpipe.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/faketime.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/md5.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/queue.Po@am__quote@
