@@ -21,9 +21,9 @@ cluster four carbon_ch
 	127.0.0.1:2034
 	;
 
-#cluster five lb
-#	127.0.0.1:2043
-#	127.0.0.1:2044
-#	;
+cluster five lb
+	127.0.0.1:2043
+	127.0.0.1:2044
+	;
 
 match * send to default;

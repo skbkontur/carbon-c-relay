@@ -24,6 +24,12 @@ struct _clhost {
 	void *hint;
 	struct _clhost *next;
 };
+struct _cluster_options {
+	int server_connections;
+	int ttl;
+	int threshold_start;
+	int threshold_end;
+};
 struct _maexpr {
 	route *r;
 	char drop;
@@ -61,14 +67,17 @@ struct _rcptr_trsp {
 %param {void *yyscanner} {router *rtr} {allocator *ralloc} {allocator *palloc}
 
 %token crCLUSTER
-%token crFORWARD crANY_OF crFAILOVER crCARBON_CH crFNV1A_CH crJUMP_FNV1A_CH
+%token crFORWARD crANY_OF crFAILOVER crLB crCARBON_CH crFNV1A_CH crJUMP_FNV1A_CH
 	crFILE crIP crREPLICATION crDYNAMIC crPROTO crUSEALL crUDP crTCP
+	crTTL crCONNECTIONS
+	crTHRESHOLD_START crTHRESHOLD_END
 %type <enum clusttype> cluster_useall cluster_ch
 %type <struct _clust> cluster_type cluster_file
 %type <int> cluster_opt_repl cluster_opt_useall cluster_opt_dynamic
 %type <con_proto> cluster_opt_proto
 %type <con_type> cluster_opt_type
 %type <char *> cluster_opt_instance
+%type <int> connections ttl threshold_start threshold_end
 %type <cluster *> cluster
 %type <struct _clhost *> cluster_host cluster_hosts cluster_opt_host
 	cluster_path cluster_paths cluster_opt_path
@@ -143,7 +152,7 @@ command: cluster
 	   ;
 
 /*** {{{ BEGIN cluster ***/
-cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
+cluster: crCLUSTER crSTRING[name] cluster_type[type] connections ttl threshold_start threshold_end cluster_hosts[servers]
 	   {
 	   	struct _clhost *w;
 		char *err;
@@ -154,8 +163,11 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 		for (srvcnt = 0, w = $servers; w != NULL; w = w->next, srvcnt++)
 			;
 
-		if (($$ = cluster_new(ralloc, $name, 1, $type.t)) == NULL) {
+		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr), cluster_ttl($ttl))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
+			YYABORT;
+		}
+		if (cluster_set_threshold($$, $threshold_start, $threshold_end) == -1) {
 			YYABORT;
 		}
 		switch ($$->type) {
@@ -187,12 +199,15 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 				break;
 			case ANYOF:
 			case FAILOVER:
+			case LB:
 				$$->members.anyof = NULL;
 				break;
 			default:
 				logerr("unknown cluster type %zd!\n", (ssize_t)$$->type);
 				YYABORT;
 		}
+
+		$$->server_connections = $connections;
 		
 		for (w = $servers; w != NULL; w = w->next) {
 			err = router_add_server(rtr, w->ip, w->port, w->inst,
@@ -210,13 +225,16 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 			YYERROR;
 		}
 	   }
-	   | crCLUSTER crSTRING[name] cluster_file[type] cluster_paths[paths]
+	   | crCLUSTER crSTRING[name] cluster_file[type] connections ttl threshold_start threshold_end cluster_paths[paths]
 	   {
 	   	struct _clhost *w;
 		char *err;
 
-		if (($$ = cluster_new(ralloc, $name, 1, $type.t)) == NULL) {
+		if (($$ = cluster_new($name, ralloc, $type.t, NULL, router_queue_size(rtr), cluster_ttl($ttl))) == NULL) {
 			logerr("malloc failed for cluster '%s'\n", $name);
+			YYABORT;
+		}
+		if (cluster_set_threshold($$, $threshold_start, $threshold_end) == -1) {
 			YYABORT;
 		}
 		switch ($$->type) {
@@ -228,6 +246,8 @@ cluster: crCLUSTER crSTRING[name] cluster_type[type] cluster_hosts[servers]
 				logerr("unknown cluster type %zd!\n", (ssize_t)$$->type);
 				YYABORT;
 		}
+
+		$$->server_connections = $connections;
 		
 		for (w = $paths; w != NULL; w = w->next) {
 			err = router_add_server(rtr, w->ip, w->port, w->inst,
@@ -257,6 +277,7 @@ cluster_type:
 cluster_useall: crFORWARD  { $$ = FORWARD; }
 			  | crANY_OF   { $$ = ANYOF; }
 			  | crFAILOVER { $$ = FAILOVER; }
+			  | crLB { $$ = LB; }			  
 			  ;
 
 cluster_opt_useall:          { $$ = 0; }
@@ -275,6 +296,22 @@ cluster_opt_repl:                             { $$ = 1; }
 cluster_opt_dynamic:           { $$ = 0; }
 				   | crDYNAMIC { $$ = 1; }
 				   ;
+
+connections:               { $$ = 1; }
+				 | crCONNECTIONS crINTVAL[cnt] { $$ = $cnt; }
+				 ;
+
+threshold_start:                  { $$ = 0; }
+				 | crTHRESHOLD_START crINTVAL[cnt] { $$ = $cnt; }
+				 ;
+
+threshold_end:                  { $$ = 0; }
+				 | crTHRESHOLD_END crINTVAL[cnt] { $$ = $cnt; }
+				 ;
+
+ttl:                            { $$ = 0; }
+				 | crTTL crINTVAL[cnt] { $$ = $cnt; }
+				 ;
 
 cluster_file: crFILE crIP { $$.t = FILELOGIP; $$.ival = 0; }
 			| crFILE      { $$.t = FILELOG; $$.ival = 0; }
@@ -428,7 +465,7 @@ match: crMATCH match_exprs[exprs] match_opt_validate[val]
 				YYABORT;
 			}
 			d->next = NULL;
-			if ((d->cl = cluster_new(ralloc, NULL, 0, VALIDATION)) == NULL) {
+			if ((d->cl = cluster_new(NULL, ralloc, VALIDATION, NULL, 0, 0)) == NULL) {
 				logerr("out of memory\n");
 				YYABORT;
 			}
@@ -593,7 +630,7 @@ rewrite: crREWRITE crSTRING[expr] crINTO crSTRING[replacement]
 			YYERROR;
 		}
 		
-		cl = cluster_new(ralloc, NULL, 0, REWRITE);
+		cl = cluster_new(NULL, ralloc, REWRITE, NULL, 0, 0);
 		if (cl == NULL) {
 			logerr("out of memory\n");
 			YYABORT;
@@ -653,7 +690,7 @@ aggregate: crAGGREGATE match_exprs2[exprs] crEVERY crINTVAL[intv] crSECONDS
 				YYERROR;
 			}
 
-			w = cluster_new(ralloc, NULL, 0, AGGREGATION);
+			w = cluster_new(NULL, ralloc, AGGREGATION, NULL, 0, 0);
 			if (w == NULL) {
 				logerr("malloc failed for aggregate\n");
 				YYABORT;

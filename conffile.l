@@ -53,6 +53,11 @@ cluster				{
 						BEGIN(idcl);
 						return crFAILOVER;
 					}
+<cl>lb		{
+						identstate = idcl;
+						BEGIN(idcl);
+						return crLB;
+					}					
 <idcl>useall			return crUSEALL;
 <cl>carbon_ch		{
 						identstate = idcl;
@@ -90,6 +95,10 @@ cluster				{
 <idcl>snappy			return crSNAPPY;
 <idcl>ssl				return crSSL;
 <idcl>=					return '=';
+<idcl>connections		return crCONNECTIONS;
+<idcl>threshold_start	return crTHRESHOLD_START;
+<idcl>threshold_end		return crTHRESHOLD_END;
+<idcl>ttl				return crTTL;
 
 match				{
 						identstate = idma;

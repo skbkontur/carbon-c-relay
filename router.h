@@ -88,9 +88,12 @@ router *router_readconfig(router *orig, const char *path, char workercnt, size_t
 void router_optimise(router *r, int threshold);
 char router_printdiffs(router *old, router *new, FILE *out);
 listener *router_contains_listener(router *rtr, listener *lsnr);
+size_t router_queue_size(router *rtr);
+size_t router_batch_size(router *rtr);
 void router_transplant_queues(router *new, router *old);
 void router_transplant_listener_socks(router *rtr, listener *olsnr, listener *nlsnr);
 char router_start(router *r);
+char router_swap(router *new, router *old);
 size_t router_rewrite_metric(char (*newmetric)[METRIC_BUFSIZ], char **newfirstspace, const char *metric, const char *firstspace, const char *replacement, const size_t nmatch, const regmatch_t *pmatch);
 void router_printconfig(router *r, FILE *f, char mode);
 char router_route(router *r, destination ret[], size_t *retcnt, size_t retsize, char *srcaddr, char *metric, char *firstspace, int dispatcher_id);
@@ -102,7 +105,7 @@ char *router_getcollectorstub(router *r);
 int router_getcollectorinterval(router *r);
 char *router_getcollectorprefix(router *r);
 col_mode router_getcollectormode(router *r);
-void router_shutdown(router *r);
+void router_shutdown(router *rtr, int swap, const router *newrtr);
 void router_free(router *r);
 
 /* run before exit from main, prevent sanitizers memory leak report */

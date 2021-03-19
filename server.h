@@ -20,11 +20,14 @@
 
 #include <netdb.h>
 
+#include "queue.h"
 #include "relay.h"
 
 #define SERVER_STALL_BITS  4  /* 0 up to 15 */
 
 #define SERVER_MAX_SEND    10 /* max try write to socket for complete */
+
+#define SERVER_MAX_CONNECTIONS 32
 
 extern int queuefree_threshold_start;
 extern int queuefree_threshold_end;
@@ -38,37 +41,47 @@ server *server_new(
 		con_type type,
 		con_trnsp transport,
 		con_proto ctype,
+		unsigned short nconns,
 		struct addrinfo *saddr,
 		struct addrinfo *hint,
 		size_t queuesize,
+		queue *q,
 		size_t batchsize,
 		int maxstalls,
 		unsigned short iotimeout,
-		unsigned int sockbufsize);
-char server_cmp(server *s, struct addrinfo *saddr, const char *ip, unsigned short port, con_proto proto);
-char server_start(server *s);
+		unsigned int sockbufsize,
+		int threshold_start,
+        int threshold_end,
+		size_t ttl);
+char server_cmp(server *s, struct addrinfo *saddr, const char *ip, unsigned short port, con_proto proto, unsigned short nconns);
+void server_update_options(server *s, size_t ttl, int threshold_start, int threshold_end);
+int server_start(server *s);
 void server_add_secondaries(server *d, server **sec, size_t cnt);
 void server_set_failover(server *d);
 void server_set_instance(server *d, char *inst);
 char server_send(server *s, const char *d, char force);
-void server_shutdown(server *s);
+void server_shutdown(server *s, int swap);
 void server_shutdown_wait(server *s);
+void server_cleanup(server *s);
 void server_free(server *s);
+queue *server_set_shared_queue(server *s, queue *q);
 void server_swap_queue(server *l, server *r);
 const char *server_ip(server *s);
 unsigned short server_port(server *s);
+unsigned short server_get_connections(server *s);
 char *server_instance(server *s);
 con_proto server_ctype(server *s);
 con_type server_type(server *s);
 con_trnsp server_transport(server *s);
 char server_failed(server *s);
-size_t server_get_ticks(server *s);
-size_t server_get_metrics(server *s);
+size_t server_get_ticks(server *s, unsigned short n);
+size_t server_get_failure(server *s, unsigned short n);
+size_t server_get_metrics(server *s, unsigned short n);
 size_t server_get_stalls(server *s);
 size_t server_get_dropped(server *s);
 size_t server_get_requeue(server *s);
-size_t server_get_ticks_sub(server *s);
-size_t server_get_metrics_sub(server *s);
+size_t server_get_ticks_sub(server *s, unsigned short n);
+size_t server_get_metrics_sub(server *s, unsigned short n);
 size_t server_get_stalls_sub(server *s);
 size_t server_get_dropped_sub(server *s);
 size_t server_get_requeue_sub(server *s);

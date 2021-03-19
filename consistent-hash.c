@@ -20,12 +20,13 @@
 #include <string.h>
 #include <assert.h>
 
+#define CH_RING struct _ch_ring
+
 #include "fnv1a.h"
 #include "md5.h"
 #include "server.h"
 #include "allocator.h"
 
-#define CH_RING struct _ch_ring
 #include "consistent-hash.h"
 
 

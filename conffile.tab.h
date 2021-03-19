@@ -1,8 +1,9 @@
-/* A Bison parser, made by GNU Bison 3.0.5.  */
+/* A Bison parser, made by GNU Bison 3.5.  */
 
 /* Bison interface for Yacc-like parsers in C
 
-   Copyright (C) 1984, 1989-1990, 2000-2015, 2018 Free Software Foundation, Inc.
+   Copyright (C) 1984, 1989-1990, 2000-2015, 2018-2019 Free Software Foundation,
+   Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -30,6 +31,9 @@
    This special exception was added by the Free Software Foundation in
    version 2.2 of Bison.  */
 
+/* Undocumented macros, especially those whose name start with YY_,
+   are private implementation details.  Do not rely on them.  */
+
 #ifndef YY_ROUTER_YY_CONFFILE_TAB_H_INCLUDED
 # define YY_ROUTER_YY_CONFFILE_TAB_H_INCLUDED
 /* Debug traces.  */
@@ -48,7 +52,7 @@
 extern int router_yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 11 "conffile.y" /* yacc.c:1910  */
+#line 11 "conffile.y"
 
 struct _clust {
 	enum clusttype t;
@@ -64,6 +68,12 @@ struct _clhost {
 	void *saddr;
 	void *hint;
 	struct _clhost *next;
+};
+struct _cluster_options {
+	int server_connections;
+	int ttl;
+	int threshold_start;
+	int threshold_end;
 };
 struct _maexpr {
 	route *r;
@@ -93,7 +103,7 @@ struct _rcptr_trsp {
 	char *pemcert;
 };
 
-#line 97 "conffile.tab.h" /* yacc.c:1910  */
+#line 107 "conffile.tab.h"
 
 /* Token type.  */
 #ifndef ROUTER_YYTOKENTYPE
@@ -104,82 +114,86 @@ struct _rcptr_trsp {
     crFORWARD = 259,
     crANY_OF = 260,
     crFAILOVER = 261,
-    crCARBON_CH = 262,
-    crFNV1A_CH = 263,
-    crJUMP_FNV1A_CH = 264,
-    crFILE = 265,
-    crIP = 266,
-    crREPLICATION = 267,
-    crDYNAMIC = 268,
-    crPROTO = 269,
-    crUSEALL = 270,
-    crUDP = 271,
-    crTCP = 272,
-    crMATCH = 273,
-    crVALIDATE = 274,
-    crELSE = 275,
-    crLOG = 276,
-    crDROP = 277,
-    crROUTE = 278,
-    crUSING = 279,
-    crSEND = 280,
-    crTO = 281,
-    crBLACKHOLE = 282,
-    crSTOP = 283,
-    crREWRITE = 284,
-    crINTO = 285,
-    crAGGREGATE = 286,
-    crEVERY = 287,
-    crSECONDS = 288,
-    crEXPIRE = 289,
-    crAFTER = 290,
-    crTIMESTAMP = 291,
-    crAT = 292,
-    crSTART = 293,
-    crMIDDLE = 294,
-    crEND = 295,
-    crOF = 296,
-    crBUCKET = 297,
-    crCOMPUTE = 298,
-    crSUM = 299,
-    crCOUNT = 300,
-    crMAX = 301,
-    crMIN = 302,
-    crAVERAGE = 303,
-    crMEDIAN = 304,
-    crVARIANCE = 305,
-    crSTDDEV = 306,
-    crPERCENTILE = 307,
-    crWRITE = 308,
-    crSTATISTICS = 309,
-    crSUBMIT = 310,
-    crRESET = 311,
-    crCOUNTERS = 312,
-    crINTERVAL = 313,
-    crPREFIX = 314,
-    crWITH = 315,
-    crLISTEN = 316,
-    crTYPE = 317,
-    crLINEMODE = 318,
-    crSYSLOGMODE = 319,
-    crTRANSPORT = 320,
-    crPLAIN = 321,
-    crGZIP = 322,
-    crLZ4 = 323,
-    crSNAPPY = 324,
-    crSSL = 325,
-    crUNIX = 326,
-    crINCLUDE = 327,
-    crCOMMENT = 328,
-    crSTRING = 329,
-    crUNEXPECTED = 330,
-    crINTVAL = 331
+    crLB = 262,
+    crCARBON_CH = 263,
+    crFNV1A_CH = 264,
+    crJUMP_FNV1A_CH = 265,
+    crFILE = 266,
+    crIP = 267,
+    crREPLICATION = 268,
+    crDYNAMIC = 269,
+    crPROTO = 270,
+    crUSEALL = 271,
+    crUDP = 272,
+    crTCP = 273,
+    crTTL = 274,
+    crCONNECTIONS = 275,
+    crTHRESHOLD_START = 276,
+    crTHRESHOLD_END = 277,
+    crMATCH = 278,
+    crVALIDATE = 279,
+    crELSE = 280,
+    crLOG = 281,
+    crDROP = 282,
+    crROUTE = 283,
+    crUSING = 284,
+    crSEND = 285,
+    crTO = 286,
+    crBLACKHOLE = 287,
+    crSTOP = 288,
+    crREWRITE = 289,
+    crINTO = 290,
+    crAGGREGATE = 291,
+    crEVERY = 292,
+    crSECONDS = 293,
+    crEXPIRE = 294,
+    crAFTER = 295,
+    crTIMESTAMP = 296,
+    crAT = 297,
+    crSTART = 298,
+    crMIDDLE = 299,
+    crEND = 300,
+    crOF = 301,
+    crBUCKET = 302,
+    crCOMPUTE = 303,
+    crSUM = 304,
+    crCOUNT = 305,
+    crMAX = 306,
+    crMIN = 307,
+    crAVERAGE = 308,
+    crMEDIAN = 309,
+    crVARIANCE = 310,
+    crSTDDEV = 311,
+    crPERCENTILE = 312,
+    crWRITE = 313,
+    crSTATISTICS = 314,
+    crSUBMIT = 315,
+    crRESET = 316,
+    crCOUNTERS = 317,
+    crINTERVAL = 318,
+    crPREFIX = 319,
+    crWITH = 320,
+    crLISTEN = 321,
+    crTYPE = 322,
+    crLINEMODE = 323,
+    crSYSLOGMODE = 324,
+    crTRANSPORT = 325,
+    crPLAIN = 326,
+    crGZIP = 327,
+    crLZ4 = 328,
+    crSNAPPY = 329,
+    crSSL = 330,
+    crUNIX = 331,
+    crINCLUDE = 332,
+    crCOMMENT = 333,
+    crSTRING = 334,
+    crUNEXPECTED = 335,
+    crINTVAL = 336
   };
 #endif
 
 /* Value type.  */
 #if ! defined ROUTER_YYSTYPE && ! defined ROUTER_YYSTYPE_IS_DECLARED
-
 union ROUTER_YYSTYPE
 {
 
@@ -243,6 +257,14 @@ union ROUTER_YYSTYPE
   int cluster_opt_repl;
   /* cluster_opt_dynamic  */
   int cluster_opt_dynamic;
+  /* connections  */
+  int connections;
+  /* threshold_start  */
+  int threshold_start;
+  /* threshold_end  */
+  int threshold_end;
+  /* ttl  */
+  int ttl;
   /* match_log_or_drop  */
   int match_log_or_drop;
   /* match_opt_stop  */
@@ -297,9 +319,9 @@ union ROUTER_YYSTYPE
   struct _rcptr_trsp * transport_mode_trans;
   /* transport_mode  */
   struct _rcptr_trsp * transport_mode;
-#line 301 "conffile.tab.h" /* yacc.c:1910  */
-};
+#line 323 "conffile.tab.h"
 
+};
 typedef union ROUTER_YYSTYPE ROUTER_YYSTYPE;
 # define ROUTER_YYSTYPE_IS_TRIVIAL 1
 # define ROUTER_YYSTYPE_IS_DECLARED 1

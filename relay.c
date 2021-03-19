@@ -254,25 +254,7 @@ do_reload(void)
 		}
 	}
 
-	/* Transplant the queues for the same servers, so we keep their
-	 * queues (potentially with data) around.  To do so, we need to make
-	 * sure the servers aren't being operated on. */
-	router_shutdown(rtr);
-
-	/* Because we know that ip:port:prot is unique in both sets, when we
-	 * find a match, we can just swap the queue.  This comes with a
-	 * slight peculiarity, that if a server becomes part of an any_of
-	 * cluster (or failover), its pending queue can now be processed by
-	 * other servers.  While this feels wrong, it can be extremely
-	 * useful in case existing data needs to be migrated to another
-	 * server, e.g. the config on purpose added a failover to offload a
-	 * known dead server before removing it.  This is fairly specific
-	 * but in reality this happens to be desirable every once so often. */
-	router_transplant_queues(newrtr, rtr);
-
-	/* Before we start the workers sending traffic, start up the
-	 * servers now queues are transplanted. */
-	router_start(newrtr);
+	router_swap(newrtr, rtr);
 
 	logout("reloading workers\n");
 	dispatchs_schedulereload(newrtr); /* un-holds */
@@ -1005,9 +987,9 @@ main(int argc, char * const argv[])
 	/* server used for delivering metrics produced inside the relay,
 	 * that is, the collector (statistics) */
 	if ((internal_submission = server_new(
-					"internal", listenport, T_LINEMODE, W_PLAIN, CON_PIPE,
-					NULL, NULL, 3000,
-					batchsize, maxstalls, iotimeout, sockbufsize)) == NULL)
+					"internal", listenport, T_LINEMODE, W_PLAIN, CON_PIPE, 1,
+					NULL, NULL, 3000, NULL,
+					batchsize, maxstalls, iotimeout, sockbufsize, 0, 0, 0)) == NULL)
 	{
 		logerr("failed to create internal submission queue, shutting down\n");
 		keep_running = 0;
@@ -1060,7 +1042,7 @@ main(int argc, char * const argv[])
 	}
 	/* since workers will be freed, stop querying the structures */
 	collector_stop();
-	server_shutdown(internal_submission);
+	server_shutdown(internal_submission, 0);
 	server_free(internal_submission);
 	logout("stopped collector\n");
 	if (numaggregators > 0) {
@@ -1085,7 +1067,7 @@ main(int argc, char * const argv[])
 	/* reduce noisy server s shutdown */
 	usleep(100000);
 
-	router_shutdown(rtr);
+	router_shutdown(rtr, 0, NULL);
 	router_free(rtr);
 	logout("stopped servers\n");
 

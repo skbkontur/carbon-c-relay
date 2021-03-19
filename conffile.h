@@ -19,94 +19,13 @@
 
 #include "server.h"
 #include "aggregator.h"
-#include "consistent-hash.h"
 #include "allocator.h"
 #include "receptor.h"
 
 #define GRAPHITE_PORT 2003
 
-enum clusttype {
-	BLACKHOLE,  /* /dev/null-like destination */
-	GROUP,      /* pseudo type to create a matching tree */
-	AGGRSTUB,   /* pseudo type to have stub matches for aggregation returns */
-	STATSTUB,   /* pseudo type to have stub matches for collector returns */
-	VALIDATION, /* pseudo type to perform additional data validation */
-	FORWARD,
-	FILELOG,    /* like forward, write metric to file */
-	FILELOGIP,  /* like forward, write ip metric to file */
-	CARBON_CH,  /* original carbon-relay.py consistent-hash */
-	FNV1A_CH,   /* FNV1a-based consistent-hash */
-	JUMP_CH,    /* jump consistent hash with fnv1a input */
-	ANYOF,      /* FNV1a-based hash, but with backup by others */
-	FAILOVER,   /* ordered attempt delivery list */
-	AGGREGATION,
-	REWRITE
-};
+#include "cluster.h"
 
-typedef struct _servers {
-	server *server;
-	int refcnt;
-	struct _servers *next;
-} servers;
-
-typedef struct {
-	unsigned char repl_factor;
-	ch_ring *ring;
-	servers *servers;
-} chashring;
-
-typedef struct {
-	unsigned short count;
-	server **servers;
-	servers *list;
-} serverlist;
-
-typedef struct _validate {
-	struct _route *rule;
-	enum { VAL_LOG, VAL_DROP } action;
-} validate;
-
-typedef struct _cluster {
-	char *name;
-	enum clusttype type;
-	char isdynamic:1;
-	union {
-		chashring *ch;
-		servers *forward;
-		serverlist *anyof;
-		aggregator *aggregation;
-		struct _route *routes;
-		char *replacement;
-		struct _validate *validation;
-	} members;
-	struct _cluster *next;
-} cluster;
-
-typedef struct _destinations {
-	cluster *cl;
-	struct _destinations *next;
-} destinations;
-
-typedef struct _route {
-	char *pattern;    /* original regex input, used for printing only */
-	regex_t *rule;    /* regex per worker on metric, only if type == REGEX */
-	size_t nmatch;    /* number of match groups */
-	char *strmatch;   /* string to search for if type not REGEX or MATCHALL */
-	destinations *dests; /* where matches should go */
-	char *masq;       /* when set, what to feed to the hashfunc when routing */
-	char stop:1;      /* whether to continue matching rules after this one */
-	enum {
-		MATCHALL,     /* the '*', don't do anything, just match everything */
-		REGEX,        /* a regex match */
-		CONTAINS,     /* find string occurrence */
-		STARTS_WITH,  /* metric must start with string */
-		ENDS_WITH,    /* metric must end with string */
-		MATCHES       /* metric matches string exactly */
-	} matchtype;      /* how to interpret the pattern */
-	struct _route *next;
-} route;
-
-cluster *cluster_new(allocator *a, char *name, char dupname, enum clusttype type);
 void router_yyerror(void *locp, void *, router *r, allocator *ra, allocator *pa, const char *msg);
 char *router_validate_address(router *rtr, char **retip, unsigned short *retport, void **retsaddr, void **rethint, char *ip, con_proto proto);
 char *router_validate_path(router *rtr, char *path);
@@ -114,7 +33,6 @@ char *router_validate_expression(router *rtr, route **retr, char *pat);
 char *router_validate_cluster(router *rtr, cluster **retcl, char *cluster);
 char *router_add_server(router *ret, char *ip, unsigned short port, char *inst, con_type type, con_trnsp transport, con_proto proto, struct addrinfo *saddrs, struct addrinfo *hint, char useall, cluster *cl);
 char *router_add_cluster(router *r, cluster *cl);
-cluster *router_cluster(router *rtr, const char *clname);
 char *router_add_route(router *r, route *rte);
 char *router_add_aggregator(router *rtr, aggregator *a);
 char *router_add_stubroute(router *rtr, enum clusttype type, cluster *w, destinations *dw);

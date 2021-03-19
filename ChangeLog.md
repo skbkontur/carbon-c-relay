@@ -1,6 +1,9 @@
 # 3.7 (unreleased master branch)
 
 ### New Features
+* **server** new load-balance cluster (lb)
+* **server** allow multiply connections per server and add connections ttl
+* **dispatcher** libevent-based connections dispatch (with distribution over multiply threads)
 
 ### Bugfixes
 
