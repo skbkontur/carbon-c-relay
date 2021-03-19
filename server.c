@@ -1328,7 +1328,7 @@ server_queuereader(void *d)
 			}
 		}
 
-		if (ret < self->bsize) {
+		if (ret < 5) {
 			usleep((100 + (rand2() % 100)) * 1000);  /* 100ms - 200ms */
 		}
 	}
