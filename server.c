@@ -120,6 +120,7 @@ struct _server {
 	const char *ip;
 	unsigned short port;
 	char *instance;
+	 pthread_rwlock_t saddr_lock;
 	struct addrinfo *saddr;
 	struct addrinfo *hint;
 	unsigned short nconns; /* connections per server */
@@ -610,6 +611,7 @@ char server_connect(server *self, unsigned short n)
 		struct addrinfo *saddr;
 		char sport[8];
 
+		pthread_rwlock_wrlock(&self->saddr_lock);
 		/* re-lookup the address info, if it fails, stay with
 		 * whatever we have such that resolution errors incurred
 		 * after starting the relay won't make it fail */
@@ -624,6 +626,7 @@ char server_connect(server *self, unsigned short n)
 			self->saddr = NULL;
 			/* this will break out below */
 		}
+		pthread_rwlock_unlock(&self->saddr_lock);
 	}
 
 	if (self->ctype == CON_PIPE) {
@@ -654,11 +657,13 @@ char server_connect(server *self, unsigned short n)
 	} else if (self->ctype == CON_UDP) {
 		struct addrinfo *walk;
 
+		pthread_rwlock_rdlock(&self->saddr_lock);
 		for (walk = self->saddr; walk != NULL; walk = walk->ai_next) {
 			if ((self->conns[n].fd = socket(walk->ai_family,
 							walk->ai_socktype,
 							walk->ai_protocol)) < 0)
 			{
+				pthread_rwlock_unlock(&self->saddr_lock);
 				if (walk->ai_next == NULL &&
 						server_add_failure(self, n) == 0)
 					logerr("failed to create udp socket to %s:%u (%u): %s\n",
@@ -667,6 +672,7 @@ char server_connect(server *self, unsigned short n)
 			}
 			if (connect(self->conns[n].fd, walk->ai_addr, walk->ai_addrlen) < 0)
 			{
+				pthread_rwlock_unlock(&self->saddr_lock);
 				if (walk->ai_next == NULL &&
 						server_add_failure(self, n) == 0)
 					logerr("failed to connect udp socket to %s:%u (%u): %s\n",
@@ -690,11 +696,13 @@ char server_connect(server *self, unsigned short n)
 		int args;
 		struct addrinfo *walk;
 
+		pthread_rwlock_rdlock(&self->saddr_lock);
 		for (walk = self->saddr; walk != NULL; walk = walk->ai_next) {
 			if ((self->conns[n].fd = socket(walk->ai_family,
 							walk->ai_socktype,
 							walk->ai_protocol)) < 0)
 			{
+				pthread_rwlock_unlock(&self->saddr_lock);
 				if (walk->ai_next == NULL &&
 						server_add_failure(self, n) == 0)
 					logerr("failed to create socket to %s:%u (%u): %s\n",
@@ -706,6 +714,7 @@ char server_connect(server *self, unsigned short n)
 			 * poll() (time-out) on the connect() call */
 			args = fcntl(self->conns[n].fd, F_GETFL, NULL);
 			if (fcntl(self->conns[n].fd, F_SETFL, args | O_NONBLOCK) < 0) {
+				pthread_rwlock_unlock(&self->saddr_lock);
 				logerr("failed to set socket non-blocking mode to %s:%u (%u): %s\n",
 						self->ip, self->port, n, strerror(errno));
 				server_add_failure(self, n);
@@ -724,6 +733,7 @@ char server_connect(server *self, unsigned short n)
 				ret = poll(ufds, 1, self->iotimeout + (rand2() % 100));
 				if (ret == 0) {
 					/* time limit expired */
+					pthread_rwlock_unlock(&self->saddr_lock);
 					if (walk->ai_next == NULL &&
 							server_add_failure(self, n) == 0)
 						logerr("failed to connect() to "
@@ -734,6 +744,7 @@ char server_connect(server *self, unsigned short n)
 					return -1;
 				} else if (ret < 0) {
 					/* some select error occurred */
+					pthread_rwlock_unlock(&self->saddr_lock);
 					if (walk->ai_next &&
 							server_add_failure(self, n) == 0)
 						logerr("failed to poll() for %s:%u (%u): %s\n",
@@ -743,6 +754,7 @@ char server_connect(server *self, unsigned short n)
 					return -1;
 				} else {
 					if (ufds[0].revents & POLLHUP) {
+						pthread_rwlock_unlock(&self->saddr_lock);
 						if (walk->ai_next == NULL &&
 								server_add_failure(self, n) == 0)
 							logerr("failed to connect() for %s:%u (%u): "
@@ -766,6 +778,7 @@ char server_connect(server *self, unsigned short n)
 					*/
 				}
 			} else if (ret < 0) {
+				pthread_rwlock_unlock(&self->saddr_lock);
 				if (walk->ai_next == NULL &&
 						server_add_failure(self, n) == 0)
 				{
@@ -780,6 +793,7 @@ char server_connect(server *self, unsigned short n)
 
 			/* make socket blocking again */
 			if (fcntl(self->conns[n].fd, F_SETFL, args) < 0) {
+				pthread_rwlock_unlock(&self->saddr_lock);
 				logerr("failed to remove socket non-blocking "
 						"mode to %s:%u (%u): %s\n", 
 						self->ip, self->port, n, strerror(errno));
@@ -815,6 +829,9 @@ char server_connect(server *self, unsigned short n)
 		/* if this didn't resolve to anything, treat as failure */
 		if (self->saddr == NULL)
 			server_add_failure(self, n);
+
+		pthread_rwlock_unlock(&self->saddr_lock);
+
 		/* all available addrinfos failed on us */
 		if (self->conns[n].fd < 0)
 			return -1;
@@ -1468,6 +1485,8 @@ server_new(
 	}
 
 	ret->ip = NULL;
+
+	pthread_rwlock_init(&ret->saddr_lock, NULL);	
 	ret->saddr = saddr;
 	ret->reresolve = 0;
 	ret->hint = NULL;
