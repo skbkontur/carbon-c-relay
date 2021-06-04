@@ -998,7 +998,7 @@ server_poll(server *self, unsigned short n, int timeout_ms)
 			}
 		} else {
 			/* timeout */
-			logerr("timeout write to %s:%u (%u): %s", self->ip, self->port, n);
+			logerr("timeout write to %s:%u (%u)", self->ip, self->port, n);
 			server_disconnect(self, n);
 		}
 	} else {
